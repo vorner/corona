@@ -3,7 +3,7 @@ extern crate futures;
 extern crate tokio_core;
 extern crate typed_arena;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 
@@ -41,17 +41,35 @@ impl<S, E> Future for Spawned<S, E> {
     }
 }
 
+thread_local! {
+    /// The `coroutine_function` must not be a closure. This is used to pass the scheduler into it.
+    ///
+    /// This should be None at all other times except when passing it through.
+    static SCHEDULER: RefCell<Option<Scheduler>> = RefCell::new(None);
+}
+
 extern "C" fn coroutine_function(t: Transfer) -> ! {
-    // TODO: Extract the information we need
-    // TODO: Loop through picking up the unstarted tasks
-    unreachable!();
+    let scheduler = SCHEDULER.with(|s| s.borrow_mut().take().unwrap());
+    *scheduler.0.main_context.borrow_mut() = Some(t.context);
+    // Don't keep the scheduler alive just from the contexts ‒ that'd be a ref cycle
+    let handle = scheduler.handle();
+    drop(scheduler);
+    loop {
+        // TODO: Loop through picking up the unstarted tasks
+    }
 }
 
 struct Internal {
+    /// The tokio used to run futures.
     handle: TokioHandle,
-    in_coroutine: Cell<bool>,
+    /// The context we want to return to, where the main application runs.
+    ///
+    /// This is `None` outside of coroutines and set to the main context inside a coroutine, so we
+    /// know where to return.
+    main_context: RefCell<Option<Context>>,
+    /// List of unstarted tasks to perform in coroutines.
     unstarted: RefCell<VecDeque<Box<FnOnce()>>>,
-
+    /// Just a space for allocation of the coroutines.
     stacks: Arena<ProtectedFixedSizeStack>,
 }
 
@@ -61,7 +79,7 @@ impl Scheduler {
     pub fn new(handle: TokioHandle) -> Self {
         let internal = Internal {
             handle,
-            in_coroutine: Cell::new(false),
+            main_context: RefCell::new(None),
             unstarted: RefCell::new(VecDeque::new()),
             stacks: Arena::new(),
         };
@@ -99,7 +117,7 @@ impl Scheduler {
         Handle(Rc::downgrade(&self.0))
     }
     fn try_running(&self) {
-        if self.0.in_coroutine.get() {
+        if self.0.main_context.borrow().is_some() {
             // Run just one coroutine at a time. Start another once we return.
             return;
         }
@@ -112,7 +130,10 @@ impl Scheduler {
         }
     }
     fn run_context(&self, context: Context) {
-        // TODO: Prepare to start (eg. set thread-local variable, etc)
+        let copy = Scheduler(self.0.clone());
+        // As the context function can't be a closure, we need to pass ourselves through the
+        // thread-local variable
+        SCHEDULER.with(|s| *s.borrow_mut() = Some(copy));
         let transfer = context.resume(0);
         // TODO: Do something with the transfer we got
     }
