@@ -1,6 +1,8 @@
 extern crate futures;
 extern crate tokio_core;
 
+use std::rc::{Rc, Weak};
+
 use futures::{Async, Poll};
 use futures::future::{Future, IntoFuture};
 use futures::unsync::oneshot::Receiver;
@@ -35,48 +37,41 @@ impl<S, E> Future for Spawned<S, E> {
 #[derive(Debug)]
 struct Internal {
     handle: TokioHandle,
-
-}
-
-impl Internal {
-    fn spawn<R, F>(&self, f: F) -> Spawned<R::Item, R::Error>
-        where
-            F: FnOnce(Handle) -> R,
-            R: IntoFuture,
-    {
-        drop(f);
-        unimplemented!()
-    }
 }
 
 #[derive(Debug)]
-pub struct Scheduler(Box<Internal>);
+pub struct Scheduler(Rc<Internal>);
 
 impl Scheduler {
     pub fn new(handle: TokioHandle) -> Self {
         let internal = Internal {
             handle
         };
-        Scheduler(Box::new(internal))
+        Scheduler(Rc::new(internal))
     }
     pub fn spawn<R, F>(&self, f: F) -> Spawned<R::Item, R::Error>
         where
             F: FnOnce(Handle) -> R,
             R: IntoFuture,
     {
-        self.0.spawn(f)
+        drop(f);
+        unimplemented!();
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Handle<'a>(&'a Internal);
+#[derive(Clone, Debug)]
+pub struct Handle(Weak<Internal>);
 
-impl<'a> Handle<'a> {
-    pub fn spawn<R, F>(&self, f: F) -> Spawned<R::Item, R::Error>
+impl Handle {
+    // TODO: Better error
+    pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R::Item, R::Error>, ()>
         where
             F: FnOnce(Handle) -> R,
             R: IntoFuture,
     {
-        self.0.spawn(f)
+        self.0
+            .upgrade()
+            .map(|internal| Scheduler(internal).spawn(f))
+            .ok_or(())
     }
 }
