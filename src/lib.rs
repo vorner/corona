@@ -53,6 +53,13 @@ impl<R> Future for Spawned<R> {
     }
 }
 
+// Make sure this is *not* Copy or Clone. That ensures the user is not able to await outside of the
+// child context.
+pub struct Await<'a> {
+    transfer: &'a mut Transfer,
+    handle: &'a Handle,
+}
+
 thread_local! {
     /// The `coroutine_function` must not be a closure. This is used to pass the scheduler into it.
     ///
@@ -76,32 +83,32 @@ enum CoroutineStatus {
     Terminated,
 }
 
-extern "C" fn coroutine_function(mut t: Transfer) -> ! {
+extern "C" fn coroutine_function(mut transfer: Transfer) -> ! {
     {
         let handle = HANDLE.with(|h| h.borrow_mut().take().unwrap());
-        while t.data == CoroutineInstruction::Work as usize {
+        while transfer.data == CoroutineInstruction::Work as usize {
             {
                 let mut task = handle.into_scheduler().get_task();
-                task.perform();
+                transfer = task.perform(transfer);
             }
-            // TODO: Loop through picking up the unstarted tasks
-            t = t.context.resume(CoroutineStatus::Ready as usize);
+            // Ask for more work and go to sleep
+            transfer = transfer.context.resume(CoroutineStatus::Ready as usize);
         }
     }
-    assert!(t.data == CoroutineInstruction::Terminate as usize);
-    // TODO: Signal that we are ready to be destroyed
-    t.context.resume(CoroutineStatus::Terminated as usize);
+    assert_eq!(transfer.data, CoroutineInstruction::Terminate as usize);
+    // Signal that we are ready to be destroyed
+    transfer.context.resume(CoroutineStatus::Terminated as usize);
     unreachable!("A context woken up after termination");
 }
 
 /// A hack to work around the fact that Box<FnOnce()> doesn't really work.
 trait BoxableTask {
-    fn perform(&mut self);
+    fn perform(&mut self, transfer: Transfer) -> Transfer;
 }
 
-impl<F: FnOnce()> BoxableTask for Option<F> {
-    fn perform(&mut self) {
-        self.take().unwrap()();
+impl<F: FnOnce(Transfer) -> Transfer> BoxableTask for Option<F> {
+    fn perform(&mut self, transfer: Transfer) -> Transfer {
+        self.take().unwrap()(transfer)
     }
 }
 
@@ -141,16 +148,24 @@ impl Scheduler {
         };
         Scheduler(Rc::new(internal))
     }
-    pub fn spawn<R: 'static, F: FnOnce() -> R + 'static>(&self, f: F) -> Spawned<R> {
+    pub fn spawn<R: 'static, F: FnOnce(&Await) -> R + 'static>(&self, f: F) -> Spawned<R> {
         let (sender, receiver) = oneshot::channel();
-        let task = move || {
-            // TODO: Think about that AssertUnwindSafe.
-            let result = match panic::catch_unwind(AssertUnwindSafe(f)) {
-                Ok(res) => TaskResult::Ok(res),
-                Err(panic) => TaskResult::Panicked(panic),
-            };
-            // We don't care if the receiver doesn't listen → ignore errors here
-            drop(sender.send(result));
+        let handle = self.handle();
+        let task = move |mut transfer| {
+            {
+                let await = Await {
+                    transfer: &mut transfer,
+                    handle: &handle,
+                };
+                // TODO: Think about that AssertUnwindSafe.
+                let result = match panic::catch_unwind(AssertUnwindSafe(|| f(&await))) {
+                    Ok(res) => TaskResult::Ok(res),
+                    Err(panic) => TaskResult::Panicked(panic),
+                };
+                // We don't care if the receiver doesn't listen → ignore errors here
+                drop(sender.send(result));
+            }
+            transfer
         };
         self.0.unstarted.borrow_mut().push_back(Box::new(Some(task)));
         self.try_running();
@@ -166,9 +181,6 @@ impl Scheduler {
         }
         while !self.0.unstarted.borrow().is_empty() {
             // We have an unstarted task, start a new coroutine that'll eat it.
-            // TODO: Reuse the contexts if there are any unused
-            // TODO: This should actually be some kind of cycle, so we don't eat the whole stack as
-            // some part of tail-recursive calls
             let context = self.get_context();
             self.run_context(context, CoroutineInstruction::Work);
         }
@@ -220,7 +232,7 @@ impl Handle {
     pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R>, SchedulerDropped>
         where
             R: 'static,
-            F: FnOnce() -> R + 'static,
+            F: FnOnce(&Await) -> R + 'static,
     {
         self.0
             .upgrade()
@@ -255,8 +267,8 @@ mod tests {
         let s2c = s2.clone();
         let handle = scheduler.handle();
 
-        let result = scheduler.spawn(move || {
-            let result = handle.spawn(move || {
+        let result = scheduler.spawn(move |_| {
+            let result = handle.spawn(move |_| {
                     s2c.set(true);
                     42
                 })
@@ -277,9 +289,9 @@ mod tests {
     fn panic_unobserved() {
         let mut core = Core::new().unwrap();
         let scheduler = Scheduler::new(core.handle());
-        scheduler.spawn(|| panic!("Test!"));
+        scheduler.spawn(|_| panic!("Test!"));
         // The second coroutine will work and the panic gets lost ‒ similar to threads.
-        assert_eq!(42, core.run(scheduler.spawn(|| 42)).unwrap());
+        assert_eq!(42, core.run(scheduler.spawn(|_| 42)).unwrap());
     }
 
     /// If we try to resolve the `Spawned`, we get the panic.
@@ -288,13 +300,13 @@ mod tests {
     fn panic_observed() {
         let mut core = Core::new().unwrap();
         let scheduler = Scheduler::new(core.handle());
-        drop(core.run(scheduler.spawn(|| panic!())));
+        drop(core.run(scheduler.spawn(|_| panic!())));
     }
 
     /// Spawning on a handle fails if the scheduler already died.
     #[test]
     fn dead_handle() {
         let handle = Scheduler::new(Core::new().unwrap().handle()).handle();
-        assert!(handle.spawn(|| true).is_err());
+        assert!(handle.spawn(|_| true).is_err());
     }
 }
