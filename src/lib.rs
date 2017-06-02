@@ -210,11 +210,14 @@ impl Scheduler {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SchedulerDropped;
+
 #[derive(Clone)]
 pub struct Handle(Weak<Internal>);
 
 impl Handle {
-    pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R>, ()>
+    pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R>, SchedulerDropped>
         where
             R: 'static,
             F: FnOnce() -> R + 'static,
@@ -222,7 +225,7 @@ impl Handle {
         self.0
             .upgrade()
             .map(|internal| Scheduler(internal).spawn(f))
-            .ok_or(())
+            .ok_or(SchedulerDropped)
     }
     /// Provide the scheduler at the end of the handle.
     ///
@@ -286,5 +289,12 @@ mod tests {
         let mut core = Core::new().unwrap();
         let scheduler = Scheduler::new(core.handle());
         drop(core.run(scheduler.spawn(|| panic!())));
+    }
+
+    /// Spawning on a handle fails if the scheduler already died.
+    #[test]
+    fn dead_handle() {
+        let handle = Scheduler::new(Core::new().unwrap().handle()).handle();
+        assert!(handle.spawn(|| true).is_err());
     }
 }
