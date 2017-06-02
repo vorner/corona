@@ -73,6 +73,12 @@ struct Internal {
     stacks: Arena<ProtectedFixedSizeStack>,
 }
 
+impl Drop for Internal {
+    fn drop(&mut self) {
+        // TODO
+    }
+}
+
 pub struct Scheduler(Rc<Internal>);
 
 impl Scheduler {
@@ -124,6 +130,8 @@ impl Scheduler {
         if !self.0.unstarted.borrow().is_empty() {
             // We have an unstarted task, start a new coroutine that'll eat it.
             // TODO: Reuse the contexts if there are any unused
+            // TODO: This should actually be some kind of cycle, so we don't eat the whole stack as
+            // some part of tail-recursive calls
             let stack = self.0.stacks.alloc(ProtectedFixedSizeStack::default());
             let context = Context::new(stack, coroutine_function);
             self.run_context(context);
