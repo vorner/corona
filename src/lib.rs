@@ -3,40 +3,52 @@ extern crate futures;
 extern crate tokio_core;
 extern crate typed_arena;
 
-use std::cell::RefCell;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::{Rc, Weak};
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Poll};
-use futures::future::{Future, IntoFuture};
+use futures::future::Future;
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle as TokioHandle;
 use typed_arena::Arena;
 
-pub struct Spawned<S, E> {
-    recv: Receiver<Result<S, E>>,
-    alive: bool,
+enum TaskResult<R> {
+    /// The task has been aborted, possibly because the scheduler got destroyed.
+    Aborted,
+    /// The task panicked.
+    Panicked(Box<Any + Send + 'static>),
+    /// Succeeded.
+    Ok(R),
 }
 
-impl<S, E> Future for Spawned<S, E> {
-    type Item = S;
-    type Error = E;
-    fn poll(&mut self) -> Poll<S, E> {
-        if self.alive {
-            match self.recv.poll() {
-                Ok(Async::Ready(Ok(s))) => Ok(Async::Ready(s)),
-                Ok(Async::Ready(Err(e))) => Err(e),
-                Ok(Async::NotReady) => Ok(Async::NotReady),
-                Err(_) => {
-                    // This one will never be ready :-(
-                    self.alive = false;
-                    Ok(Async::NotReady)
-                },
-            }
-        } else {
-            Ok(Async::NotReady)
+// TODO: Implement Error for this thing.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TaskFailed {
+    /// The task has been aborted, possibly because the scheduler got destroyed.
+    Aborted,
+    /// Lost.
+    ///
+    /// TODO: Can this actually happen?
+    Lost,
+}
+
+pub struct Spawned<R>(Receiver<TaskResult<R>>);
+
+impl<R> Future for Spawned<R> {
+    type Item = R;
+    type Error = TaskFailed;
+    fn poll(&mut self) -> Poll<R, TaskFailed> {
+        match self.0.poll() {
+            Ok(Async::Ready(TaskResult::Aborted)) => Err(TaskFailed::Aborted),
+            Ok(Async::Ready(TaskResult::Panicked(reason))) => panic::resume_unwind(reason),
+            Ok(Async::Ready(TaskResult::Ok(result))) => Ok(Async::Ready(result)),
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(_) => Err(TaskFailed::Lost),
         }
     }
 }
@@ -45,37 +57,74 @@ thread_local! {
     /// The `coroutine_function` must not be a closure. This is used to pass the scheduler into it.
     ///
     /// This should be None at all other times except when passing it through.
-    static SCHEDULER: RefCell<Option<Scheduler>> = RefCell::new(None);
+    static HANDLE: RefCell<Option<Handle>> = RefCell::new(None);
 }
 
-extern "C" fn coroutine_function(t: Transfer) -> ! {
-    let scheduler = SCHEDULER.with(|s| s.borrow_mut().take().unwrap());
-    *scheduler.0.main_context.borrow_mut() = Some(t.context);
-    // Don't keep the scheduler alive just from the contexts ‒ that'd be a ref cycle
-    let handle = scheduler.handle();
-    drop(scheduler);
-    loop {
-        // TODO: Loop through picking up the unstarted tasks
+#[derive(Eq, PartialEq)]
+enum CoroutineInstruction {
+    /// The coroutine should pick up a new task and work on it.
+    Work,
+    /// The coroutine should terminate.
+    Terminate,
+}
+
+#[derive(Eq, PartialEq)]
+enum CoroutineStatus {
+    /// Ready to do more work.
+    Ready,
+    /// Please, deallocate me.
+    Terminated,
+}
+
+extern "C" fn coroutine_function(mut t: Transfer) -> ! {
+    {
+        let handle = HANDLE.with(|h| h.borrow_mut().take().unwrap());
+        while t.data == CoroutineInstruction::Work as usize {
+            {
+                let mut task = handle.into_scheduler().get_task();
+                task.perform();
+            }
+            // TODO: Loop through picking up the unstarted tasks
+            t = t.context.resume(CoroutineStatus::Ready as usize);
+        }
+    }
+    assert!(t.data == CoroutineInstruction::Terminate as usize);
+    // TODO: Signal that we are ready to be destroyed
+    t.context.resume(CoroutineStatus::Terminated as usize);
+    unreachable!("A context woken up after termination");
+}
+
+/// A hack to work around the fact that Box<FnOnce()> doesn't really work.
+trait BoxableTask {
+    fn perform(&mut self);
+}
+
+impl<F: FnOnce()> BoxableTask for Option<F> {
+    fn perform(&mut self) {
+        self.take().unwrap()();
     }
 }
+
+type Task = Box<BoxableTask>;
 
 struct Internal {
     /// The tokio used to run futures.
     handle: TokioHandle,
-    /// The context we want to return to, where the main application runs.
-    ///
-    /// This is `None` outside of coroutines and set to the main context inside a coroutine, so we
-    /// know where to return.
-    main_context: RefCell<Option<Context>>,
+    /// Are we currently in the main context?
+    main_context: Cell<bool>,
     /// List of unstarted tasks to perform in coroutines.
-    unstarted: RefCell<VecDeque<Box<FnOnce()>>>,
+    unstarted: RefCell<VecDeque<Task>>,
     /// Just a space for allocation of the coroutines.
     stacks: Arena<ProtectedFixedSizeStack>,
+    /// Contexts not doing anything right now.
+    ///
+    /// These contexts finished their assigned work and are ready to be reused.
+    retired: RefCell<Vec<Context>>,
 }
 
 impl Drop for Internal {
     fn drop(&mut self) {
-        // TODO
+        // TODO clean up (unwind) active contexts?
     }
 }
 
@@ -85,65 +134,79 @@ impl Scheduler {
     pub fn new(handle: TokioHandle) -> Self {
         let internal = Internal {
             handle,
-            main_context: RefCell::new(None),
+            main_context: Cell::new(true),
             unstarted: RefCell::new(VecDeque::new()),
             stacks: Arena::new(),
+            retired: RefCell::new(Vec::new()),
         };
         Scheduler(Rc::new(internal))
     }
-    pub fn spawn<R, F>(&self, f: F) -> Spawned<R::Item, R::Error>
-        where
-            F: FnOnce() -> R + 'static,
-            R: IntoFuture,
-            R::Item: 'static,
-            R::Error: 'static,
-            R::Future: 'static,
-    {
+    pub fn spawn<R: 'static, F: FnOnce() -> R + 'static>(&self, f: F) -> Spawned<R> {
         let (sender, receiver) = oneshot::channel();
-        let weak = Rc::downgrade(&self.0);
         let task = move || {
-            let done = f()
-                .into_future()
-                .then(|r| {
-                    drop(sender.send(r));
-                    Ok(())
-                });
-            weak.upgrade().map(|internal| {
-                internal.handle.spawn(done);
-            });
+            // TODO: Think about that AssertUnwindSafe.
+            let result = match panic::catch_unwind(AssertUnwindSafe(f)) {
+                Ok(res) => TaskResult::Ok(res),
+                Err(panic) => TaskResult::Panicked(panic),
+            };
+            // We don't care if the receiver doesn't listen → ignore errors here
+            drop(sender.send(result));
         };
-        self.0.unstarted.borrow_mut().push_back(Box::new(task));
+        self.0.unstarted.borrow_mut().push_back(Box::new(Some(task)));
         self.try_running();
-        Spawned {
-            recv: receiver,
-            alive: true,
-        }
+        Spawned(receiver)
     }
     pub fn handle(&self) -> Handle {
         Handle(Rc::downgrade(&self.0))
     }
     fn try_running(&self) {
-        if self.0.main_context.borrow().is_some() {
+        if !self.0.main_context.get() {
             // Run just one coroutine at a time. Start another once we return.
             return;
         }
-        if !self.0.unstarted.borrow().is_empty() {
+        while !self.0.unstarted.borrow().is_empty() {
             // We have an unstarted task, start a new coroutine that'll eat it.
             // TODO: Reuse the contexts if there are any unused
             // TODO: This should actually be some kind of cycle, so we don't eat the whole stack as
             // some part of tail-recursive calls
-            let stack = self.0.stacks.alloc(ProtectedFixedSizeStack::default());
-            let context = Context::new(stack, coroutine_function);
-            self.run_context(context);
+            let context = self.get_context();
+            self.run_context(context, CoroutineInstruction::Work);
         }
     }
-    fn run_context(&self, context: Context) {
-        let copy = Scheduler(self.0.clone());
+    /// Get a context.
+    ///
+    /// Either allocate it or get a retired one.
+    fn get_context(&self) -> Context {
+        self.0.retired
+            .borrow_mut()
+            .pop()
+            .unwrap_or_else(|| {
+                let stack = self.0.stacks.alloc(ProtectedFixedSizeStack::default());
+                Context::new(stack, coroutine_function)
+            })
+    }
+    fn run_context(&self, context: Context, instruction: CoroutineInstruction) {
         // As the context function can't be a closure, we need to pass ourselves through the
         // thread-local variable
-        SCHEDULER.with(|s| *s.borrow_mut() = Some(copy));
-        let transfer = context.resume(0);
-        // TODO: Do something with the transfer we got
+        HANDLE.with(|h| *h.borrow_mut() = Some(self.handle()));
+        self.0.main_context.set(false);
+        let transfer = context.resume(instruction as usize);
+        self.0.main_context.set(true);
+        if transfer.data == CoroutineStatus::Ready as usize {
+            self.0.retired.borrow_mut().push(transfer.context);
+        } else if transfer.data == CoroutineStatus::Terminated as usize {
+            drop(transfer.context);
+        } else {
+            unreachable!("Context returned invalid state {}", transfer.data);
+        }
+    }
+    /// Get an unstarted task.
+    ///
+    /// # Panics
+    ///
+    /// If there are no tasks waiting to be started.
+    fn get_task(&self) -> Task {
+        self.0.unstarted.borrow_mut().pop_front().unwrap()
     }
 }
 
@@ -151,18 +214,77 @@ impl Scheduler {
 pub struct Handle(Weak<Internal>);
 
 impl Handle {
-    // TODO: Better error
-    pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R::Item, R::Error>, ()>
+    pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R>, ()>
         where
+            R: 'static,
             F: FnOnce() -> R + 'static,
-            R: IntoFuture,
-            R::Item: 'static,
-            R::Error: 'static,
-            R::Future: 'static,
     {
         self.0
             .upgrade()
             .map(|internal| Scheduler(internal).spawn(f))
             .ok_or(())
+    }
+    /// Provide the scheduler at the end of the handle.
+    ///
+    /// # Panics
+    ///
+    /// This assumes the scheduler is still alive. This is the case in all cases when we call this
+    /// in the child context, because the main context holds at least one strong reference.
+    fn into_scheduler(&self) -> Scheduler {
+        Scheduler(self.0.upgrade().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_core::reactor::Core;
+
+    use super::*;
+
+    /// Test spawning and execution of tasks.
+    #[test]
+    fn spawn_some() {
+        let mut core = Core::new().unwrap();
+        let scheduler = Scheduler::new(core.handle());
+        let s1 = Rc::new(Cell::new(false));
+        let s2 = Rc::new(Cell::new(false));
+        let s1c = s1.clone();
+        let s2c = s2.clone();
+        let handle = scheduler.handle();
+
+        let result = scheduler.spawn(move || {
+            let result = handle.spawn(move || {
+                    s2c.set(true);
+                    42
+                })
+                .unwrap();
+            s1c.set(true);
+            result
+        });
+        // Both coroutines run
+        assert!(s1.get(), "The outer closure didn't run");
+        assert!(s2.get(), "The inner closure didn't run");
+        // The result gets propagated through.
+        let extract = result.and_then(|r| r);
+        assert_eq!(42, core.run(extract).unwrap());
+    }
+
+    /// The panic doesn't kill the scheduler.
+    #[test]
+    fn panic_unobserved() {
+        let mut core = Core::new().unwrap();
+        let scheduler = Scheduler::new(core.handle());
+        scheduler.spawn(|| panic!("Test!"));
+        // The second coroutine will work and the panic gets lost ‒ similar to threads.
+        assert_eq!(42, core.run(scheduler.spawn(|| 42)).unwrap());
+    }
+
+    /// If we try to resolve the `Spawned`, we get the panic.
+    #[test]
+    #[should_panic]
+    fn panic_observed() {
+        let mut core = Core::new().unwrap();
+        let scheduler = Scheduler::new(core.handle());
+        drop(core.run(scheduler.spawn(|| panic!())));
     }
 }
