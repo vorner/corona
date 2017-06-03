@@ -56,8 +56,36 @@ impl<R> Future for Spawned<R> {
 // Make sure this is *not* Copy or Clone. That ensures the user is not able to await outside of the
 // child context.
 pub struct Await<'a> {
-    transfer: &'a mut Transfer,
+    transfer: &'a mut Option<Transfer>,
     handle: &'a Handle,
+}
+
+impl<'a> Await<'a> {
+    pub fn future<I, E, Fut>(&mut self, fut: Fut) -> Result<I, E>
+        where
+            I: 'static,
+            E: 'static,
+            Fut: Future<Item = I, Error = E> + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        let result_sent = fut.then(move |r| {
+            drop(sender.send(r));
+            Ok::<_, ()>(())
+        });
+        self.handle.into_scheduler().schedule_future(result_sent);
+        let transfer = self.transfer.take().unwrap();
+
+        let new_transfer = transfer.context.resume(CoroutineStatus::Waiting as usize);
+
+        let instruction = new_transfer.data;
+        *self.transfer = Some(new_transfer);
+        // TODO: Handle force termination.
+        assert!(instruction == CoroutineInstruction::Resume as usize);
+        // It is safe to .wait(), because once we are resumed, the future already went through.
+        // It shouldn't happen that we got canceled under normal circumstances (may need API
+        // changes to actually ensure that).
+        receiver.wait().expect("A future got canceled")
+    }
 }
 
 thread_local! {
@@ -71,6 +99,8 @@ thread_local! {
 enum CoroutineInstruction {
     /// The coroutine should pick up a new task and work on it.
     Work,
+    /// Resume work, the future you waited on is ready.
+    Resume,
     /// The coroutine should terminate.
     Terminate,
 }
@@ -79,6 +109,8 @@ enum CoroutineInstruction {
 enum CoroutineStatus {
     /// Ready to do more work.
     Ready,
+    /// Waiting for a future to complete before continuation.
+    Waiting,
     /// Please, deallocate me.
     Terminated,
 }
@@ -127,6 +159,11 @@ struct Internal {
     ///
     /// These contexts finished their assigned work and are ready to be reused.
     retired: RefCell<Vec<Context>>,
+    /// A temporary storage for a future to be scheduled.
+    ///
+    /// This is where the coroutine places a future to be started once the coroutine resumes to the
+    /// main thread. It is `None` at other times.
+    scheduled_future: RefCell<Option<Box<Future<Item = (), Error = ()>>>>,
 }
 
 impl Drop for Internal {
@@ -145,27 +182,29 @@ impl Scheduler {
             unstarted: RefCell::new(VecDeque::new()),
             stacks: Arena::new(),
             retired: RefCell::new(Vec::new()),
+            scheduled_future: RefCell::new(None),
         };
         Scheduler(Rc::new(internal))
     }
-    pub fn spawn<R: 'static, F: FnOnce(&Await) -> R + 'static>(&self, f: F) -> Spawned<R> {
+    pub fn spawn<R: 'static, F: FnOnce(&mut Await) -> R + 'static>(&self, f: F) -> Spawned<R> {
         let (sender, receiver) = oneshot::channel();
         let handle = self.handle();
-        let task = move |mut transfer| {
+        let task = move |transfer| {
+            let mut trans_opt = Some(transfer);
             {
-                let await = Await {
-                    transfer: &mut transfer,
+                let mut await = Await {
+                    transfer: &mut trans_opt,
                     handle: &handle,
                 };
                 // TODO: Think about that AssertUnwindSafe.
-                let result = match panic::catch_unwind(AssertUnwindSafe(|| f(&await))) {
+                let result = match panic::catch_unwind(AssertUnwindSafe(|| f(&mut await))) {
                     Ok(res) => TaskResult::Ok(res),
                     Err(panic) => TaskResult::Panicked(panic),
                 };
                 // We don't care if the receiver doesn't listen → ignore errors here
                 drop(sender.send(result));
             }
-            transfer
+            trans_opt.take().unwrap()
         };
         self.0.unstarted.borrow_mut().push_back(Box::new(Some(task)));
         self.try_running();
@@ -206,6 +245,8 @@ impl Scheduler {
         self.0.main_context.set(true);
         if transfer.data == CoroutineStatus::Ready as usize {
             self.0.retired.borrow_mut().push(transfer.context);
+        } else if transfer.data == CoroutineStatus::Waiting as usize {
+            self.postpone_task(transfer.context);
         } else if transfer.data == CoroutineStatus::Terminated as usize {
             drop(transfer.context);
         } else {
@@ -220,6 +261,29 @@ impl Scheduler {
     fn get_task(&self) -> Task {
         self.0.unstarted.borrow_mut().pop_front().unwrap()
     }
+    // TODO: Get rid of this 'static? Is it needed?
+    fn schedule_future<Fut: Future<Item = (), Error = ()> + 'static>(&self, fut: Fut) {
+        // This should actually be impossible due to the API
+        assert!(!self.0.main_context.get(), "Tried to schedule a future from the main thread");
+        let mut storage = self.0.scheduled_future.borrow_mut();
+        assert!(storage.is_none(), "Stranded future found");
+        *storage = Some(Box::new(fut));
+    }
+    fn resume_waited(&self, context: Context) {
+        self.run_context(context, CoroutineInstruction::Resume);
+    }
+    fn postpone_task(&self, context: Context) {
+        let fut = self.0.scheduled_future
+            .borrow_mut()
+            .take()
+            .expect("Coroutine asked to wait for a future, but didn't provide one");
+        let handle = self.handle();
+        let with_wakeup = fut.then(move |_| {
+            handle.resume_waited(context);
+            Ok::<_, ()>(())
+        });
+        self.0.handle.spawn(with_wakeup);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -232,7 +296,7 @@ impl Handle {
     pub fn spawn<R, F>(&self, f: F) -> Result<Spawned<R>, SchedulerDropped>
         where
             R: 'static,
-            F: FnOnce(&Await) -> R + 'static,
+            F: FnOnce(&mut Await) -> R + 'static,
     {
         self.0
             .upgrade()
@@ -248,11 +312,18 @@ impl Handle {
     fn into_scheduler(&self) -> Scheduler {
         Scheduler(self.0.upgrade().unwrap())
     }
+    fn resume_waited(&self, context: Context) {
+        self.0
+            .upgrade()
+            .map(move |internal| Scheduler(internal).resume_waited(context));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use tokio_core::reactor::Core;
+    use std::time::Duration;
+
+    use tokio_core::reactor::{Core, Timeout};
 
     use super::*;
 
@@ -308,5 +379,24 @@ mod tests {
     fn dead_handle() {
         let handle = Scheduler::new(Core::new().unwrap().handle()).handle();
         assert!(handle.spawn(|_| true).is_err());
+    }
+
+    /// Wait for a future to complete.
+    #[test]
+    fn future_wait() {
+        let mut core = Core::new().unwrap();
+        let scheduler = Scheduler::new(core.handle());
+        let (sender, receiver) = oneshot::channel();
+        let handle = core.handle();
+        let all_done = scheduler.spawn(move |mut await| {
+            let msg = await.future(receiver).unwrap();
+            msg
+        });
+        scheduler.spawn(move |mut await| {
+            let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+            await.future(timeout).unwrap();
+            sender.send(42).unwrap();
+        });
+        assert_eq!(42, core.run(all_done).unwrap());
     }
 }
