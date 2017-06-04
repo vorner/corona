@@ -4,7 +4,7 @@ extern crate tokio_core;
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::panic::{self, UnwindSafe};
+use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
@@ -24,19 +24,6 @@ pub enum TaskFailed {
     Lost,
 }
 
-pub struct Await<'a> {
-    transfer: &'a mut Transfer,
-    handle: &'a Handle,
-}
-
-impl<'a> Await<'a> {
-    pub fn handle(&self) -> &Handle {
-        self.handle
-    }
-}
-
-impl<'a> UnwindSafe for Await<'a> {}
-
 trait BoxableTask {
     fn perform(&mut self, Transfer) -> Transfer;
 }
@@ -55,6 +42,11 @@ enum Switch {
         stack: ProtectedFixedSizeStack,
         task: BoxedTask,
     },
+    ScheduleWakeup {
+        after: Box<Future<Item = (), Error = ()>>,
+        handle: Handle,
+    },
+    Resume,
     Destroy {
         stack: ProtectedFixedSizeStack,
     },
@@ -77,6 +69,46 @@ impl Switch {
     }
 }
 
+pub struct Await<'a> {
+    transfer: &'a mut Option<Transfer>,
+    handle: &'a Handle,
+}
+
+impl<'a> Await<'a> {
+    pub fn handle(&self) -> &Handle {
+        self.handle
+    }
+    pub fn future<I, E, Fut>(&mut self, fut: Fut) -> Result<I, E>
+        where
+            I: 'static,
+            E: 'static,
+            Fut: Future<Item = I, Error = E> + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        let task = fut.then(move |r| {
+            // Errors are uninteresting - just the listener missing
+            // TODO: Is it even possible?
+            drop(sender.send(r));
+            Ok(())
+        });
+        let switch = Switch::ScheduleWakeup {
+            after: Box::new(task),
+            handle: self.handle.clone(),
+        };
+        switch.put();
+        let transfer = self.transfer.take().unwrap().context.resume(0);
+        *self.transfer = Some(transfer);
+        match Switch::get() {
+            Switch::Resume => (),
+            _ => panic!("Invalid instruction on wakeup"),
+        }
+        // It is safe to .wait(), because once we are resumed, the future already went through.
+        // It shouldn't happen that we got canceled under normal circumstances (may need API
+        // changes to actually ensure that).
+        receiver.wait().expect("A future got canceled")
+    }
+}
+
 extern "C" fn coroutine(mut transfer: Transfer) -> ! {
     let switch = Switch::get();
     let result = match switch {
@@ -88,7 +120,7 @@ extern "C" fn coroutine(mut transfer: Transfer) -> ! {
     };
     result.put();
     transfer.context.resume(0);
-    unreachable!();
+    unreachable!("Woken up after termination!");
 }
 
 pub struct Coroutine<R> {
@@ -98,20 +130,21 @@ pub struct Coroutine<R> {
 impl<R: 'static> Coroutine<R> {
     pub fn spawn<Task>(handle: Handle, task: Task) -> Self
         where
-            Task: FnOnce(&mut Await) -> R + UnwindSafe + 'static,
+            Task: FnOnce(&mut Await) -> R + 'static,
     {
         let (sender, receiver) = oneshot::channel();
 
         let stack = ProtectedFixedSizeStack::default();
         let context = Context::new(&stack, coroutine);
 
-        let perform_and_send = move |mut transfer| {
+        let perform_and_send = move |transfer| {
+            let mut transfer = Some(transfer);
             {
                 let mut await = Await {
                     transfer: &mut transfer,
                     handle: &handle,
                 };
-                let result = match panic::catch_unwind(move || task(&mut await)) {
+                let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&mut await))) {
                     Ok(res) => TaskResult::Finished(res),
                     Err(panic) => TaskResult::Panicked(panic),
                 };
@@ -119,7 +152,7 @@ impl<R: 'static> Coroutine<R> {
                 // interested, which is fine by us.
                 drop(sender.send(result));
             }
-            transfer
+            transfer.unwrap()
         };
 
         Self::run_child(context, Switch::StartTask {
@@ -139,6 +172,15 @@ impl<R: 'static> Coroutine<R> {
             Switch::Destroy { stack } => {
                 drop(transfer.context);
                 drop(stack);
+            },
+            Switch::ScheduleWakeup { after, handle } => {
+                // TODO: We may want some kind of our own future here and implement Drop, so we can
+                // unwind the stack and destroy it.
+                let wakeup = after.then(move |_| {
+                    Self::run_child(transfer.context, Switch::Resume);
+                    Ok(())
+                });
+                handle.spawn(wakeup);
             },
             _ => unreachable!("Invalid switch instruction when switching out"),
         }
@@ -162,8 +204,9 @@ impl<R> Future for Coroutine<R> {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::rc::Rc;
+    use std::time::Duration;
 
-    use tokio_core::reactor::Core;
+    use tokio_core::reactor::{Core, Timeout};
 
     use super::*;
 
@@ -205,5 +248,22 @@ mod tests {
         }
         let handle = core.handle();
         assert_eq!(42, core.run(Coroutine::spawn(handle, |_| 42)).unwrap());
+    }
+
+    /// Wait for a future to complete.
+    #[test]
+    fn future_wait() {
+        let mut core = Core::new().unwrap();
+        let (sender, receiver) = oneshot::channel();
+        let all_done = Coroutine::spawn(core.handle(), move |mut await| {
+            let msg = await.future(receiver).unwrap();
+            msg
+        });
+        Coroutine::spawn(core.handle(), move |mut await| {
+            let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
+            await.future(timeout).unwrap();
+            sender.send(42).unwrap();
+        });
+        assert_eq!(42, core.run(all_done).unwrap());
     }
 }
