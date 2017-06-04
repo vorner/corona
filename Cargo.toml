@@ -7,4 +7,3 @@ authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 context = "~1"
 futures = "~0.1"
 tokio-core = "~0.1"
-typed-arena = "~1"
