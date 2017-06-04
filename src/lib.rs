@@ -4,7 +4,7 @@ extern crate tokio_core;
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, UnwindSafe};
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
@@ -34,6 +34,8 @@ impl<'a> Await<'a> {
         self.handle
     }
 }
+
+impl<'a> UnwindSafe for Await<'a> {}
 
 trait BoxableTask {
     fn perform(&mut self, Transfer) -> Transfer;
@@ -94,7 +96,10 @@ pub struct Coroutine<R> {
 }
 
 impl<R: 'static> Coroutine<R> {
-    pub fn spawn<Task: FnOnce(&mut Await) -> R + 'static>(handle: Handle, task: Task) -> Self {
+    pub fn spawn<Task>(handle: Handle, task: Task) -> Self
+        where
+            Task: FnOnce(&mut Await) -> R + UnwindSafe + 'static,
+    {
         let (sender, receiver) = oneshot::channel();
 
         let stack = ProtectedFixedSizeStack::default();
@@ -106,8 +111,7 @@ impl<R: 'static> Coroutine<R> {
                     transfer: &mut transfer,
                     handle: &handle,
                 };
-                // TODO: Think about that AssertUnwindSafe.
-                let result = match panic::catch_unwind(AssertUnwindSafe(|| task(&mut await))) {
+                let result = match panic::catch_unwind(move || task(&mut await)) {
                     Ok(res) => TaskResult::Finished(res),
                     Err(panic) => TaskResult::Panicked(panic),
                 };
