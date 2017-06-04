@@ -1,0 +1,13 @@
+* Unclean shutdowns
+  - When the Core drops we need to get rid of all the waiting stacks and
+    everything on them somehow.
+  - Using panic to unwind the waiting coroutine might work, but might be
+    problematic in certain situations. Dropping just the stack doesn't seem
+    good either.
+* Stream adaptor for iteration
+* License, documentation, etc
+* Examples
+* External tests
+* Cache the stacks, as they are probably expensive to create (they call mmap
+  and manipulating the memory mappings flushes the whole TLB).
+* Pass the instructions through the usize (ugly, but probably better than the TLS).
