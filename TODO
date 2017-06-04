@@ -11,3 +11,9 @@
 * Cache the stacks, as they are probably expensive to create (they call mmap
   and manipulating the memory mappings flushes the whole TLB).
 * Pass the instructions through the usize (ugly, but probably better than the TLS).
+* Make the await not mut (so it can be used at multiple places in the coroutine
+  at once, like in iterator adaptors)
+* Think about some thread support ‒ do we want some? How would it integrate in the API?
+* Ability to spawn coroutines with smaller stack.
+* Look at the unwind safety and unwinding in general.
+* Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
