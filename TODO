@@ -16,4 +16,3 @@
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
 * Generators (through a wrapper around Await) that produce a stream instead of future
 * Builder pattern to create the coroutines ‒ spawn will have only the closure.
-* Yield (future that is ready right away)

@@ -9,6 +9,7 @@ use std::panic::{self, AssertUnwindSafe};
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use futures::{Future, Async, Poll, Stream};
+use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
 
@@ -152,6 +153,10 @@ impl<'a> Await<'a> {
             await: self,
             stream: Some(stream),
         }
+    }
+    pub fn switch(&self) {
+        let fut = future::ok::<_, ()>(());
+        self.future(fut).unwrap();
     }
 }
 
@@ -329,5 +334,16 @@ mod tests {
             sum
         });
         assert_eq!(3, core.run(done).unwrap());
+    }
+
+    /// A smoke test for switch() (that it gets resumed and doesn't crash)
+    #[test]
+    fn switch() {
+        let mut core = Core::new().unwrap();
+        let done = Coroutine::spawn(core.handle(), |await| {
+            await.switch();
+            await.switch();
+        });
+        core.run(done).unwrap();
     }
 }
