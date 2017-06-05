@@ -8,7 +8,7 @@ use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
-use futures::{Future, Async, Poll};
+use futures::{Future, Async, Poll, Stream};
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
 
@@ -69,6 +69,36 @@ impl Switch {
     }
 }
 
+pub struct StreamIterator<'a, I, E, S>
+    where
+        S: Stream<Item = I, Error = E> + 'static,
+        I: 'static,
+        E: 'static,
+{
+    await: &'a Await<'a>,
+    stream: Option<S>,
+}
+
+impl<'a, I, E, S> Iterator for StreamIterator<'a, I, E, S>
+    where
+        S: Stream<Item = I, Error = E> + 'static,
+        I: 'static,
+        E: 'static,
+{
+    type Item = Result<I, E>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let fut = self.stream.take().unwrap().into_future();
+        let resolved = self.await.future(fut);
+        let (result, stream) = match resolved {
+            Ok((None, stream)) => (None, stream),
+            Ok((Some(ok), stream)) => (Some(Ok(ok)), stream),
+            Err((e, stream)) => (Some(Err(e)), stream),
+        };
+        self.stream = Some(stream);
+        result
+    }
+}
+
 pub struct Await<'a> {
     transfer: &'a RefCell<Option<Transfer>>,
     handle: &'a Handle,
@@ -111,6 +141,17 @@ impl<'a> Await<'a> {
         // It shouldn't happen that we got canceled under normal circumstances (may need API
         // changes to actually ensure that).
         receiver.wait().expect("A future got canceled")
+    }
+    pub fn stream<I, E, S>(&self, stream: S) -> StreamIterator<I, E, S>
+        where
+            S: Stream<Item = I, Error = E> + 'static,
+            I: 'static,
+            E: 'static,
+    {
+        StreamIterator {
+            await: self,
+            stream: Some(stream),
+        }
     }
 }
 
@@ -211,7 +252,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use tokio_core::reactor::{Core, Timeout};
+    use tokio_core::reactor::{Core, Interval, Timeout};
 
     use super::*;
 
@@ -260,15 +301,33 @@ mod tests {
     fn future_wait() {
         let mut core = Core::new().unwrap();
         let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::spawn(core.handle(), move |mut await| {
+        let all_done = Coroutine::spawn(core.handle(), move |await| {
             let msg = await.future(receiver).unwrap();
             msg
         });
-        Coroutine::spawn(core.handle(), move |mut await| {
+        Coroutine::spawn(core.handle(), move |await| {
             let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
             await.future(timeout).unwrap();
             sender.send(42).unwrap();
         });
         assert_eq!(42, core.run(all_done).unwrap());
+    }
+
+    /// Stream can be iterated asynchronously.
+    #[test]
+    fn stream_iter() {
+        let mut core = Core::new().unwrap();
+        let stream = Interval::new(Duration::from_millis(10), &core.handle())
+            .unwrap()
+            .take(3)
+            .map(|_| 1);
+        let done = Coroutine::spawn(core.handle(), move |await| {
+            let mut sum = 0;
+            for i in await.stream(stream) {
+                sum += i.unwrap();
+            }
+            sum
+        });
+        assert_eq!(3, core.run(done).unwrap());
     }
 }

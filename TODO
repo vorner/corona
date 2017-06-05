@@ -4,7 +4,6 @@
   - Using panic to unwind the waiting coroutine might work, but might be
     problematic in certain situations. Dropping just the stack doesn't seem
     good either.
-* Stream adaptor for iteration
 * License, documentation, etc
 * Examples
 * External tests
