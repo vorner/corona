@@ -70,7 +70,7 @@ impl Switch {
 }
 
 pub struct Await<'a> {
-    transfer: &'a mut Option<Transfer>,
+    transfer: &'a RefCell<Option<Transfer>>,
     handle: &'a Handle,
 }
 
@@ -78,7 +78,7 @@ impl<'a> Await<'a> {
     pub fn handle(&self) -> &Handle {
         self.handle
     }
-    pub fn future<I, E, Fut>(&mut self, fut: Fut) -> Result<I, E>
+    pub fn future<I, E, Fut>(&self, fut: Fut) -> Result<I, E>
         where
             I: 'static,
             E: 'static,
@@ -96,8 +96,13 @@ impl<'a> Await<'a> {
             handle: self.handle.clone(),
         };
         switch.put();
-        let transfer = self.transfer.take().unwrap().context.resume(0);
-        *self.transfer = Some(transfer);
+        let transfer = self.transfer
+            .borrow_mut()
+            .take()
+            .unwrap()
+            .context
+            .resume(0);
+        *self.transfer.borrow_mut() = Some(transfer);
         match Switch::get() {
             Switch::Resume => (),
             _ => panic!("Invalid instruction on wakeup"),
@@ -130,7 +135,7 @@ pub struct Coroutine<R> {
 impl<R: 'static> Coroutine<R> {
     pub fn spawn<Task>(handle: Handle, task: Task) -> Self
         where
-            Task: FnOnce(&mut Await) -> R + 'static,
+            Task: FnOnce(&Await) -> R + 'static,
     {
         let (sender, receiver) = oneshot::channel();
 
@@ -138,13 +143,13 @@ impl<R: 'static> Coroutine<R> {
         let context = Context::new(&stack, coroutine);
 
         let perform_and_send = move |transfer| {
-            let mut transfer = Some(transfer);
+            let transfer = RefCell::new(Some(transfer));
             {
-                let mut await = Await {
-                    transfer: &mut transfer,
+                let await = Await {
+                    transfer: &transfer,
                     handle: &handle,
                 };
-                let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&mut await))) {
+                let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&await))) {
                     Ok(res) => TaskResult::Finished(res),
                     Err(panic) => TaskResult::Panicked(panic),
                 };
@@ -152,7 +157,7 @@ impl<R: 'static> Coroutine<R> {
                 // interested, which is fine by us.
                 drop(sender.send(result));
             }
-            transfer.unwrap()
+            transfer.into_inner().unwrap()
         };
 
         Self::run_child(context, Switch::StartTask {
