@@ -12,7 +12,7 @@ use context::stack::{ProtectedFixedSizeStack, Stack, StackError};
 use futures::{Future, Async, Poll, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
-use futures::unsync::mpsc::{self, Sender as ChannelSender};
+use futures::unsync::mpsc::{self, Receiver as ChannelReceiver, Sender as ChannelSender};
 use tokio_core::reactor::Handle;
 
 enum TaskResult<R> {
@@ -164,7 +164,7 @@ impl<'a> Await<'a> {
 
 pub struct Producer<'a, I: 'static> {
     await: &'a Await<'a>,
-    sink: RefCell<Option<ChannelSender<I>>>,
+    sink: RefCell<Option<ChannelSender<Result<I, Box<Any + Send + 'static>>>>>,
 }
 
 impl<'a, I: 'static> Deref for Producer<'a, I> {
@@ -176,7 +176,7 @@ impl<'a, I: 'static> Deref for Producer<'a, I> {
 }
 
 impl<'a, I: 'static> Producer<'a, I> {
-    pub fn new(await: &'a Await<'a>, sink: ChannelSender<I>) -> Self {
+    pub fn new(await: &'a Await<'a>, sink: ChannelSender<Result<I, Box<Any + Send + 'static>>>) -> Self {
         Producer {
             await,
             sink: RefCell::new(Some(sink)),
@@ -185,7 +185,7 @@ impl<'a, I: 'static> Producer<'a, I> {
     pub fn produce(&self, item: I) {
         let sink = self.sink.borrow_mut().take();
         if let Some(sink) = sink {
-            let future = sink.send(item);
+            let future = sink.send(Ok(item));
             if let Ok(s) = self.await.future(future) {
                 *self.sink.borrow_mut() = Some(s);
             }
@@ -227,6 +227,27 @@ impl Coroutine {
     {
         Coroutine::build(handle).spawn(task).unwrap()
     }
+    fn spawn_inner<Task>(&self, task: Task) -> Result<(), StackError>
+        where
+            Task: FnOnce(Handle, RefCell<Option<Transfer>>) -> RefCell<Option<Transfer>> + 'static
+    {
+        let stack = ProtectedFixedSizeStack::new(self.stack_size)?;
+        let context = Context::new(&stack, coroutine);
+        let handle = self.handle.clone();
+
+        let perform = move |transfer| {
+            let transfer = RefCell::new(Some(transfer));
+            let transfer = task(handle, transfer);
+            transfer.into_inner().unwrap()
+        };
+
+        Coroutine::run_child(context, Switch::StartTask {
+            stack,
+            task: Box::new(Some(perform)),
+        });
+
+        Ok(())
+    }
     // TODO: Do we want to make StackError part of our public API? Maybe not.
     pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
         where
@@ -235,12 +256,7 @@ impl Coroutine {
     {
         let (sender, receiver) = oneshot::channel();
 
-        let stack = ProtectedFixedSizeStack::new(self.stack_size)?;
-        let context = Context::new(&stack, coroutine);
-        let handle = self.handle.clone();
-
-        let perform_and_send = move |transfer| {
-            let transfer = RefCell::new(Some(transfer));
+        let perform_and_send = move |handle, transfer| {
             {
                 let await = Await {
                     transfer: &transfer,
@@ -254,29 +270,48 @@ impl Coroutine {
                 // interested, which is fine by us.
                 drop(sender.send(result));
             }
-            transfer.into_inner().unwrap()
+            transfer
         };
 
-        CoroutineResult::<R>::run_child(context, Switch::StartTask {
-            stack,
-            task: Box::new(Some(perform_and_send)),
-        });
+        self.spawn_inner(perform_and_send)?;
 
         Ok(CoroutineResult {
             receiver
+        })
+    }
+    pub fn generator<Item, Task>(&self, task: Task) -> Result<GeneratorResult<Item>, StackError>
+        where
+            Item: 'static,
+            Task: FnOnce(&Producer<Item>) + 'static,
+    {
+        let (sender, receiver) = mpsc::channel(1);
+
+        let generate = move |handle, transfer| {
+            {
+                let await = Await {
+                    transfer: &transfer,
+                    handle: &handle,
+                };
+                let producer = Producer::new(&await, sender.clone());
+
+                match panic::catch_unwind(AssertUnwindSafe(move || task(&producer))) {
+                    Ok(_) => (),
+                    Err(panic) => drop(await.future(sender.send(Err(panic)))),
+                }
+            }
+            transfer
+        };
+
+        self.spawn_inner(generate)?;
+
+        Ok(GeneratorResult {
+            receiver,
         })
     }
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
         self
     }
-}
-
-pub struct CoroutineResult<R> {
-    receiver: Receiver<TaskResult<R>>,
-}
-
-impl<R: 'static> CoroutineResult<R> {
     fn run_child(context: Context, switch: Switch) {
         switch.put();
         let transfer = context.resume(0);
@@ -300,6 +335,10 @@ impl<R: 'static> CoroutineResult<R> {
     }
 }
 
+pub struct CoroutineResult<R> {
+    receiver: Receiver<TaskResult<R>>,
+}
+
 impl<R> Future for CoroutineResult<R> {
     type Item = R;
     type Error = TaskFailed;
@@ -313,9 +352,26 @@ impl<R> Future for CoroutineResult<R> {
     }
 }
 
+pub struct GeneratorResult<Item> {
+    receiver: ChannelReceiver<Result<Item, Box<Any + Send + 'static>>>,
+}
+
+impl<Item> Stream for GeneratorResult<Item> {
+    type Item = Item;
+    type Error = Box<Any + Send + 'static>;
+    fn poll(&mut self) -> Poll<Option<Item>, Self::Error> {
+        match self.receiver.poll() {
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
+            Ok(Async::Ready(Some(Ok(item)))) => Ok(Async::Ready(Some(item))),
+            Ok(Async::Ready(Some(Err(e)))) => Err(e),
+            Err(_) => panic!("Error from mpsc channel ‒ Can Not Happen"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::rc::Rc;
     use std::time::Duration;
@@ -419,22 +475,42 @@ mod tests {
     fn producer() {
         let mut core = Core::new().unwrap();
         let (sender, receiver) = mpsc::channel(1);
-        let done_sender = Coroutine::new(core.handle(), move |await| -> Result<(), Box<Error>> {
+        let done_sender = Coroutine::new(core.handle(), move |await| {
             let producer = Producer::new(await, sender);
             producer.produce(42);
             producer.produce(12);
-            Ok(())
         });
-        let done_receiver = Coroutine::new(core.handle(), |await| -> Result<(), Box<Error>> {
-            let result = await.stream(receiver).collect::<Result<Vec<_>, _>>().unwrap();
+        let done_receiver = Coroutine::new(core.handle(), |await| {
+            let result = await.stream(receiver).map(Result::unwrap).collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(vec![42, 12], result);
-            Ok(())
         });
-        let done = Coroutine::new(core.handle(), move |await| -> Result<(), Box<Error>> {
-            await.future(done_sender).unwrap()?;
-            await.future(done_receiver).unwrap()?;
-            Ok(())
+        let done = Coroutine::new(core.handle(), move |await| {
+            await.future(done_sender).unwrap();
+            await.future(done_receiver).unwrap();
         });
-        core.run(done).unwrap().unwrap();
+        core.run(done).unwrap();
+    }
+
+    #[test]
+    fn generator() {
+        let mut core = Core::new().unwrap();
+        let builder = Coroutine::build(core.handle());
+        let stream1 = builder.generator(|await| {
+            await.produce(42);
+            await.produce(12);
+        }).unwrap();
+        let stream2 = builder.generator(|await| {
+            for item in await.stream(stream1) {
+                await.produce(item.unwrap());
+            }
+        }).unwrap();
+        let done = builder.spawn(move |await| {
+            let mut result = Vec::new();
+            for item in await.stream(stream2) {
+                result.push(item.unwrap());
+            }
+            assert_eq!(vec![42, 12], result);
+        }).unwrap();
+        core.run(done).unwrap();
     }
 }

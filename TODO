@@ -13,4 +13,3 @@
 * Think about some thread support ‒ do we want some? How would it integrate in the API?
 * Look at the unwind safety and unwinding in general.
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
-* Generators (through a wrapper around Await) that produce a stream instead of future
