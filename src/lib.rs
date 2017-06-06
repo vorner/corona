@@ -4,11 +4,12 @@ extern crate tokio_core;
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
 use context::stack::{ProtectedFixedSizeStack, Stack, StackError};
-use futures::{Future, Async, Poll, Stream};
+use futures::{Future, Async, Poll, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
@@ -160,6 +161,56 @@ impl<'a> Await<'a> {
     }
 }
 
+pub struct Producer<'a, I, E, S>
+    where
+        S: Sink<SinkItem = I, SinkError = E> + 'static,
+        E: 'static,
+{
+    await: &'a Await<'a>,
+    sink: RefCell<Option<S>>,
+}
+
+impl<'a, I, E, S> Deref for Producer<'a, I, E, S>
+    where
+        S: Sink<SinkItem = I, SinkError = E> + 'static,
+        E: 'static,
+{
+    type Target = Await<'a>;
+
+    fn deref(&self) -> &Await<'a> {
+        self.await
+    }
+}
+
+impl<'a, I, E, S> Producer<'a, I, E, S>
+    where
+        S: Sink<SinkItem = I, SinkError = E> + 'static,
+        E: 'static,
+{
+    pub fn new(await: &'a Await<'a>, sink: S) -> Self {
+        Producer {
+            await,
+            sink: RefCell::new(Some(sink)),
+        }
+    }
+    pub fn produce(&self, item: I) -> Result<(), E> {
+        let sink = self.sink
+            .borrow_mut()
+            .take()
+            // FIXME: This doesn't look like a very good API, does it?
+            .expect("Lost sink (did it error before?)");
+        let future = sink.send(item);
+        let result = self.await.future(future);
+        match result {
+            Ok(s) => {
+                *self.sink.borrow_mut() = Some(s);
+                Ok(())
+            },
+            Err(e) => Err(e),
+        }
+    }
+}
+
 extern "C" fn coroutine(mut transfer: Transfer) -> ! {
     let switch = Switch::get();
     let result = match switch {
@@ -282,10 +333,12 @@ impl<R> Future for CoroutineResult<R> {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::rc::Rc;
     use std::time::Duration;
 
+    use futures::unsync::mpsc;
     use tokio_core::reactor::{Core, Interval, Timeout};
 
     use super::*;
@@ -378,5 +431,28 @@ mod tests {
             await.yield_now();
         });
         core.run(done).unwrap();
+    }
+
+    #[test]
+    fn producer() {
+        let mut core = Core::new().unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        let done_sender = Coroutine::new(core.handle(), move |await| -> Result<(), Box<Error>> {
+            let producer = Producer::new(await, sender);
+            producer.produce(42)?;
+            producer.produce(12)?;
+            Ok(())
+        });
+        let done_receiver = Coroutine::new(core.handle(), |await| -> Result<(), Box<Error>> {
+            let result = await.stream(receiver).collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(vec![42, 12], result);
+            Ok(())
+        });
+        let done = Coroutine::new(core.handle(), move |await| -> Result<(), Box<Error>> {
+            await.future(done_sender).unwrap()?;
+            await.future(done_receiver).unwrap()?;
+            Ok(())
+        });
+        core.run(done).unwrap().unwrap();
     }
 }
