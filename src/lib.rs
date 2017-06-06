@@ -12,6 +12,7 @@ use context::stack::{ProtectedFixedSizeStack, Stack, StackError};
 use futures::{Future, Async, Poll, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
+use futures::unsync::mpsc::{self, Sender as ChannelSender};
 use tokio_core::reactor::Handle;
 
 enum TaskResult<R> {
@@ -161,20 +162,12 @@ impl<'a> Await<'a> {
     }
 }
 
-pub struct Producer<'a, I, E, S>
-    where
-        S: Sink<SinkItem = I, SinkError = E> + 'static,
-        E: 'static,
-{
+pub struct Producer<'a, I: 'static> {
     await: &'a Await<'a>,
-    sink: RefCell<Option<S>>,
+    sink: RefCell<Option<ChannelSender<I>>>,
 }
 
-impl<'a, I, E, S> Deref for Producer<'a, I, E, S>
-    where
-        S: Sink<SinkItem = I, SinkError = E> + 'static,
-        E: 'static,
-{
+impl<'a, I: 'static> Deref for Producer<'a, I> {
     type Target = Await<'a>;
 
     fn deref(&self) -> &Await<'a> {
@@ -182,31 +175,20 @@ impl<'a, I, E, S> Deref for Producer<'a, I, E, S>
     }
 }
 
-impl<'a, I, E, S> Producer<'a, I, E, S>
-    where
-        S: Sink<SinkItem = I, SinkError = E> + 'static,
-        E: 'static,
-{
-    pub fn new(await: &'a Await<'a>, sink: S) -> Self {
+impl<'a, I: 'static> Producer<'a, I> {
+    pub fn new(await: &'a Await<'a>, sink: ChannelSender<I>) -> Self {
         Producer {
             await,
             sink: RefCell::new(Some(sink)),
         }
     }
-    pub fn produce(&self, item: I) -> Result<(), E> {
-        let sink = self.sink
-            .borrow_mut()
-            .take()
-            // FIXME: This doesn't look like a very good API, does it?
-            .expect("Lost sink (did it error before?)");
-        let future = sink.send(item);
-        let result = self.await.future(future);
-        match result {
-            Ok(s) => {
+    pub fn produce(&self, item: I) {
+        let sink = self.sink.borrow_mut().take();
+        if let Some(sink) = sink {
+            let future = sink.send(item);
+            if let Ok(s) = self.await.future(future) {
                 *self.sink.borrow_mut() = Some(s);
-                Ok(())
-            },
-            Err(e) => Err(e),
+            }
         }
     }
 }
@@ -439,8 +421,8 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         let done_sender = Coroutine::new(core.handle(), move |await| -> Result<(), Box<Error>> {
             let producer = Producer::new(await, sender);
-            producer.produce(42)?;
-            producer.produce(12)?;
+            producer.produce(42);
+            producer.produce(12);
             Ok(())
         });
         let done_receiver = Coroutine::new(core.handle(), |await| -> Result<(), Box<Error>> {
