@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
-use context::stack::ProtectedFixedSizeStack;
+use context::stack::{ProtectedFixedSizeStack, Stack, StackError};
 use futures::{Future, Async, Poll, Stream};
 use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
@@ -174,19 +174,37 @@ extern "C" fn coroutine(mut transfer: Transfer) -> ! {
     unreachable!("Woken up after termination!");
 }
 
-pub struct Coroutine<R> {
-    receiver: Receiver<TaskResult<R>>,
+#[derive(Clone)]
+pub struct Coroutine {
+    handle: Handle,
+    stack_size: usize,
 }
 
-impl<R: 'static> Coroutine<R> {
-    pub fn spawn<Task>(handle: Handle, task: Task) -> Self
+impl Coroutine {
+    pub fn build(handle: Handle) -> Self {
+        Coroutine {
+            handle,
+            stack_size: Stack::default_size(),
+        }
+    }
+    pub fn new<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
         where
+            R: 'static,
+            Task: FnOnce(&Await) -> R + 'static,
+    {
+        Coroutine::build(handle).spawn(task).unwrap()
+    }
+    // TODO: Do we want to make StackError part of our public API? Maybe not.
+    pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
+        where
+            R: 'static,
             Task: FnOnce(&Await) -> R + 'static,
     {
         let (sender, receiver) = oneshot::channel();
 
-        let stack = ProtectedFixedSizeStack::default();
+        let stack = ProtectedFixedSizeStack::new(self.stack_size)?;
         let context = Context::new(&stack, coroutine);
+        let handle = self.handle.clone();
 
         let perform_and_send = move |transfer| {
             let transfer = RefCell::new(Some(transfer));
@@ -206,15 +224,26 @@ impl<R: 'static> Coroutine<R> {
             transfer.into_inner().unwrap()
         };
 
-        Self::run_child(context, Switch::StartTask {
+        CoroutineResult::<R>::run_child(context, Switch::StartTask {
             stack,
             task: Box::new(Some(perform_and_send)),
         });
 
-        Coroutine {
+        Ok(CoroutineResult {
             receiver
-        }
+        })
     }
+    pub fn stack_size(&mut self, size: usize) -> &mut Self {
+        self.stack_size = size;
+        self
+    }
+}
+
+pub struct CoroutineResult<R> {
+    receiver: Receiver<TaskResult<R>>,
+}
+
+impl<R: 'static> CoroutineResult<R> {
     fn run_child(context: Context, switch: Switch) {
         switch.put();
         let transfer = context.resume(0);
@@ -238,7 +267,7 @@ impl<R: 'static> Coroutine<R> {
     }
 }
 
-impl<R> Future for Coroutine<R> {
+impl<R> Future for CoroutineResult<R> {
     type Item = R;
     type Error = TaskFailed;
     fn poll(&mut self) -> Poll<R, TaskFailed> {
@@ -271,14 +300,18 @@ mod tests {
         let s2c = s2.clone();
         let handle = core.handle();
 
-        let result = Coroutine::spawn(handle, move |await| {
-            let result = Coroutine::spawn(await.handle().clone(), move |_| {
+        let mut builder = Coroutine::build(handle);
+        builder.stack_size(40960);
+        let builder_inner = builder.clone();
+
+        let result = builder.spawn(move |_| {
+            let result = builder_inner.spawn(move |_| {
                 s2c.store(true, Ordering::Relaxed);
                 42
-            });
+            }).unwrap();
             s1c.store(true, Ordering::Relaxed);
             result
-        });
+        }).unwrap();
 
         // Both coroutines run to finish
         assert!(s1.load(Ordering::Relaxed), "The outer closure didn't run");
@@ -293,12 +326,12 @@ mod tests {
     fn panics() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
-        match core.run(Coroutine::spawn(handle, |_| panic!("Test"))) {
+        match core.run(Coroutine::new(handle, |_| panic!("Test"))) {
             Err(TaskFailed::Panicked(_)) => (),
             _ => panic!("Panic not reported properly"),
         }
         let handle = core.handle();
-        assert_eq!(42, core.run(Coroutine::spawn(handle, |_| 42)).unwrap());
+        assert_eq!(42, core.run(Coroutine::new(handle, |_| 42)).unwrap());
     }
 
     /// Wait for a future to complete.
@@ -306,11 +339,11 @@ mod tests {
     fn future_wait() {
         let mut core = Core::new().unwrap();
         let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::spawn(core.handle(), move |await| {
+        let all_done = Coroutine::new(core.handle(), move |await| {
             let msg = await.future(receiver).unwrap();
             msg
         });
-        Coroutine::spawn(core.handle(), move |await| {
+        Coroutine::new(core.handle(), move |await| {
             let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
             await.future(timeout).unwrap();
             sender.send(42).unwrap();
@@ -326,7 +359,7 @@ mod tests {
             .unwrap()
             .take(3)
             .map(|_| 1);
-        let done = Coroutine::spawn(core.handle(), move |await| {
+        let done = Coroutine::new(core.handle(), move |await| {
             let mut sum = 0;
             for i in await.stream(stream) {
                 sum += i.unwrap();
@@ -340,7 +373,7 @@ mod tests {
     #[test]
     fn yield_now() {
         let mut core = Core::new().unwrap();
-        let done = Coroutine::spawn(core.handle(), |await| {
+        let done = Coroutine::new(core.handle(), |await| {
             await.yield_now();
             await.yield_now();
         });

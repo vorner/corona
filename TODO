@@ -11,8 +11,6 @@
   and manipulating the memory mappings flushes the whole TLB).
 * Pass the instructions through the usize (ugly, but probably better than the TLS).
 * Think about some thread support ‒ do we want some? How would it integrate in the API?
-* Ability to spawn coroutines with smaller stack.
 * Look at the unwind safety and unwinding in general.
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
 * Generators (through a wrapper around Await) that produce a stream instead of future
-* Builder pattern to create the coroutines ‒ spawn will have only the closure.
