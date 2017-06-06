@@ -154,7 +154,7 @@ impl<'a> Await<'a> {
             stream: Some(stream),
         }
     }
-    pub fn switch(&self) {
+    pub fn yield_now(&self) {
         let fut = future::ok::<_, ()>(());
         self.future(fut).unwrap();
     }
@@ -336,13 +336,13 @@ mod tests {
         assert_eq!(3, core.run(done).unwrap());
     }
 
-    /// A smoke test for switch() (that it gets resumed and doesn't crash)
+    /// A smoke test for yield_now() (that it gets resumed and doesn't crash)
     #[test]
-    fn switch() {
+    fn yield_now() {
         let mut core = Core::new().unwrap();
         let done = Coroutine::spawn(core.handle(), |await| {
-            await.switch();
-            await.switch();
+            await.yield_now();
+            await.yield_now();
         });
         core.run(done).unwrap();
     }
