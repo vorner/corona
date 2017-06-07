@@ -16,3 +16,4 @@
 * Something like select
 * Wait for future with timeout?
 * Document why the unsafe blocks are in fact safe
+* Build fails on half of appveyor ‒ seems like some issue with compiler, look if it can be made work
