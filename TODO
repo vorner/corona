@@ -13,3 +13,6 @@
 * Think about some thread support ‒ do we want some? How would it integrate in the API?
 * Look at the unwind safety and unwinding in general.
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
+* Something like select
+* Wait for future with timeout?
+* Use the newest context
