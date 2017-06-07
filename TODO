@@ -15,4 +15,4 @@
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
 * Something like select
 * Wait for future with timeout?
-* Use the newest context
+* Document why the unsafe blocks are in fact safe

@@ -15,6 +15,6 @@ travis-ci = { repository = "vorner/corona" }
 appveyor = { repository = "vorner/corona" }
 
 [dependencies]
-context = "~1"
+context = "~2"
 futures = "~0.1"
 tokio-core = "~0.1"

@@ -129,12 +129,12 @@ impl<'a> Await<'a> {
             handle: self.handle.clone(),
         };
         switch.put();
-        let transfer = self.transfer
+        let context = self.transfer
             .borrow_mut()
             .take()
             .unwrap()
-            .context
-            .resume(0);
+            .context;
+        let transfer = unsafe { context.resume(0) };
         *self.transfer.borrow_mut() = Some(transfer);
         match Switch::get() {
             Switch::Resume => (),
@@ -206,7 +206,8 @@ extern "C" fn coroutine(mut transfer: Transfer) -> ! {
         _ => panic!("Invalid switch instruction on coroutine entry"),
     };
     result.put();
-    transfer.context.resume(0);
+    let context = transfer.context;
+    unsafe { context.resume(0) };
     unreachable!("Woken up after termination!");
 }
 
@@ -235,7 +236,7 @@ impl Coroutine {
             Task: FnOnce(Handle, RefCell<Option<Transfer>>) -> RefCell<Option<Transfer>> + 'static
     {
         let stack = ProtectedFixedSizeStack::new(self.stack_size)?;
-        let context = Context::new(&stack, coroutine);
+        let context = unsafe { Context::new(&stack, coroutine) };
         let handle = self.handle.clone();
 
         let perform = move |transfer| {
@@ -317,7 +318,7 @@ impl Coroutine {
     }
     fn run_child(context: Context, switch: Switch) {
         switch.put();
-        let transfer = context.resume(0);
+        let transfer = unsafe { context.resume(0) };
         let switch = Switch::get();
         match switch {
             Switch::Destroy { stack } => {
