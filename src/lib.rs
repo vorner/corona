@@ -162,9 +162,12 @@ impl<'a> Await<'a> {
     }
 }
 
+type ItemOrPanic<I> = Result<I, Box<Any + Send + 'static>>;
+type ItemSender<I> = ChannelSender<ItemOrPanic<I>>;
+
 pub struct Producer<'a, I: 'static> {
     await: &'a Await<'a>,
-    sink: RefCell<Option<ChannelSender<Result<I, Box<Any + Send + 'static>>>>>,
+    sink: RefCell<Option<ItemSender<I>>>,
 }
 
 impl<'a, I: 'static> Deref for Producer<'a, I> {
@@ -176,7 +179,7 @@ impl<'a, I: 'static> Deref for Producer<'a, I> {
 }
 
 impl<'a, I: 'static> Producer<'a, I> {
-    pub fn new(await: &'a Await<'a>, sink: ChannelSender<Result<I, Box<Any + Send + 'static>>>) -> Self {
+    pub fn new(await: &'a Await<'a>, sink: ItemSender<I>) -> Self {
         Producer {
             await,
             sink: RefCell::new(Some(sink)),
@@ -220,7 +223,7 @@ impl Coroutine {
             stack_size: Stack::default_size(),
         }
     }
-    pub fn new<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
+    pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
         where
             R: 'static,
             Task: FnOnce(&Await) -> R + 'static,
@@ -365,7 +368,7 @@ impl<Item> Stream for GeneratorResult<Item> {
             Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
             Ok(Async::Ready(Some(Ok(item)))) => Ok(Async::Ready(Some(item))),
             Ok(Async::Ready(Some(Err(e)))) => Err(e),
-            Err(_) => panic!("Error from mpsc channel ‒ Can Not Happen"),
+            Err(_) => unreachable!("Error from mpsc channel ‒ Can Not Happen"),
         }
     }
 }
@@ -417,12 +420,12 @@ mod tests {
     fn panics() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
-        match core.run(Coroutine::new(handle, |_| panic!("Test"))) {
+        match core.run(Coroutine::with_defaults(handle, |_| panic!("Test"))) {
             Err(TaskFailed::Panicked(_)) => (),
             _ => panic!("Panic not reported properly"),
         }
         let handle = core.handle();
-        assert_eq!(42, core.run(Coroutine::new(handle, |_| 42)).unwrap());
+        assert_eq!(42, core.run(Coroutine::with_defaults(handle, |_| 42)).unwrap());
     }
 
     /// Wait for a future to complete.
@@ -430,11 +433,11 @@ mod tests {
     fn future_wait() {
         let mut core = Core::new().unwrap();
         let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::new(core.handle(), move |await| {
+        let all_done = Coroutine::with_defaults(core.handle(), move |await| {
             let msg = await.future(receiver).unwrap();
             msg
         });
-        Coroutine::new(core.handle(), move |await| {
+        Coroutine::with_defaults(core.handle(), move |await| {
             let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
             await.future(timeout).unwrap();
             sender.send(42).unwrap();
@@ -450,7 +453,7 @@ mod tests {
             .unwrap()
             .take(3)
             .map(|_| 1);
-        let done = Coroutine::new(core.handle(), move |await| {
+        let done = Coroutine::with_defaults(core.handle(), move |await| {
             let mut sum = 0;
             for i in await.stream(stream) {
                 sum += i.unwrap();
@@ -464,7 +467,7 @@ mod tests {
     #[test]
     fn yield_now() {
         let mut core = Core::new().unwrap();
-        let done = Coroutine::new(core.handle(), |await| {
+        let done = Coroutine::with_defaults(core.handle(), |await| {
             await.yield_now();
             await.yield_now();
         });
@@ -475,16 +478,16 @@ mod tests {
     fn producer() {
         let mut core = Core::new().unwrap();
         let (sender, receiver) = mpsc::channel(1);
-        let done_sender = Coroutine::new(core.handle(), move |await| {
+        let done_sender = Coroutine::with_defaults(core.handle(), move |await| {
             let producer = Producer::new(await, sender);
             producer.produce(42);
             producer.produce(12);
         });
-        let done_receiver = Coroutine::new(core.handle(), |await| {
+        let done_receiver = Coroutine::with_defaults(core.handle(), |await| {
             let result = await.stream(receiver).map(Result::unwrap).collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(vec![42, 12], result);
         });
-        let done = Coroutine::new(core.handle(), move |await| {
+        let done = Coroutine::with_defaults(core.handle(), move |await| {
             await.future(done_sender).unwrap();
             await.future(done_receiver).unwrap();
         });
