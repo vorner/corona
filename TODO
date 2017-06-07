@@ -4,7 +4,7 @@
   - Using panic to unwind the waiting coroutine might work, but might be
     problematic in certain situations. Dropping just the stack doesn't seem
     good either.
-* License, documentation, etc
+* documentation, etc
 * Examples
 * External tests
 * Cache the stacks, as they are probably expensive to create (they call mmap

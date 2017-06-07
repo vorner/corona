@@ -2,6 +2,17 @@
 name = "corona"
 version = "0.1.0"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
+description = "Coroutine and Async/Await support for tokio-based futures"
+documentation = "https://docs.rs/corona"
+repository = "https://github.com/vorner/corona"
+readme = "README.md"
+keywords = ["coroutine", "future", "tokio", "await"]
+categories = ["asynchronous"]
+license = "Apache-2.0/MIT"
+
+[badges]
+travis-ci = { repository = "vorner/corona" }
+appveyor = { repository = "vorner/corona" }
 
 [dependencies]
 context = "~1"
