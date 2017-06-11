@@ -15,92 +15,16 @@ use futures::unsync::oneshot::{self, Receiver};
 use futures::unsync::mpsc::{self, Receiver as ChannelReceiver, Sender as ChannelSender};
 use tokio_core::reactor::Handle;
 
-enum TaskResult<R> {
-    Panicked(Box<Any + Send + 'static>),
-    Finished(R),
-}
+pub mod results;
 
-#[derive(Debug)]
-pub enum TaskFailed {
-    Panicked(Box<Any + Send + 'static>),
-    // Can this actually happen?
-    Lost,
-}
+mod errors;
+mod switch;
 
-trait BoxableTask {
-    fn perform(&mut self, Transfer) -> Transfer;
-}
+pub use errors::TaskFailed;
 
-impl<F: FnOnce(Transfer) -> Transfer> BoxableTask for Option<F> {
-    fn perform(&mut self, transfer: Transfer) -> Transfer {
-        self.take().unwrap()(transfer)
-    }
-}
-
-type BoxedTask = Box<BoxableTask>;
-
-// TODO: We could actually pass this through the data field of the transfer
-enum Switch {
-    StartTask {
-        stack: ProtectedFixedSizeStack,
-        task: BoxedTask,
-    },
-    ScheduleWakeup {
-        after: Box<Future<Item = (), Error = ()>>,
-        handle: Handle,
-    },
-    Resume,
-    Destroy {
-        stack: ProtectedFixedSizeStack,
-    },
-}
-
-thread_local! {
-    static SWITCH: RefCell<Option<Switch>> = RefCell::new(None);
-}
-
-impl Switch {
-    fn put(self) {
-        SWITCH.with(|s| {
-            let mut s = s.borrow_mut();
-            assert!(s.is_none(), "Leftover switch instruction");
-            *s = Some(self);
-        });
-    }
-    fn get() -> Self {
-        SWITCH.with(|s| s.borrow_mut().take().expect("Missing switch instruction"))
-    }
-}
-
-pub struct StreamIterator<'a, I, E, S>
-    where
-        S: Stream<Item = I, Error = E> + 'static,
-        I: 'static,
-        E: 'static,
-{
-    await: &'a Await<'a>,
-    stream: Option<S>,
-}
-
-impl<'a, I, E, S> Iterator for StreamIterator<'a, I, E, S>
-    where
-        S: Stream<Item = I, Error = E> + 'static,
-        I: 'static,
-        E: 'static,
-{
-    type Item = Result<I, E>;
-    fn next(&mut self) -> Option<Self::Item> {
-        let fut = self.stream.take().unwrap().into_future();
-        let resolved = self.await.future(fut);
-        let (result, stream) = match resolved {
-            Ok((None, stream)) => (None, stream),
-            Ok((Some(ok), stream)) => (Some(Ok(ok)), stream),
-            Err((e, stream)) => (Some(Err(e)), stream),
-        };
-        self.stream = Some(stream);
-        result
-    }
-}
+use errors::TaskResult;
+use results::StreamIterator;
+use switch::Switch;
 
 pub struct Await<'a> {
     transfer: &'a RefCell<Option<Transfer>>,
@@ -151,10 +75,7 @@ impl<'a> Await<'a> {
             I: 'static,
             E: 'static,
     {
-        StreamIterator {
-            await: self,
-            stream: Some(stream),
-        }
+        StreamIterator::new(self, stream)
     }
     pub fn yield_now(&self) {
         let fut = future::ok::<_, ()>(());
