@@ -26,15 +26,64 @@ use errors::TaskResult;
 use results::StreamIterator;
 use switch::Switch;
 
+/// An asynchronous context.
+///
+/// This is passed to each coroutine closure and can be used to pause (or block) the coroutine,
+/// waiting for a future or something similar to complete.
+///
+/// The context is explicit, for two reasons. One is, it is possible to ensure nobody tries to
+/// wait for a future and block outside of coroutine. The other is, it is more obvious what happens
+/// from the code than with some thread-local magic behind the scenes.
+///
+/// The downside is a little bit less convenience on use.
 pub struct Await<'a> {
     transfer: &'a RefCell<Option<Transfer>>,
     handle: &'a Handle,
 }
 
 impl<'a> Await<'a> {
+    /// Accesses the handle to the corresponding reactor core.
+    ///
+    /// This is simply a convenience method, since it is possible to get the handle explicitly into
+    /// every place where this can be used. But it is convenient not to have to pass another
+    /// variable and the `Await` and the handle are usually used together.
     pub fn handle(&self) -> &Handle {
         self.handle
     }
+    /// Blocks the current coroutine until the future resolves.
+    ///
+    /// This blocks or parks the current coroutine (and lets other coroutines run) until the
+    /// provided future completes. The result of the coroutine is returned.
+    ///
+    /// # Notes
+    ///
+    /// For the switching between coroutines to work, the reactor must be running.
+    ///
+    /// # Panics
+    ///
+    /// This may panic if the reactor core is dropped before the waited-for future resolves. The
+    /// panic is meant to unwind the coroutine's stack so all the memory can be cleaned up.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    /// use std::time::Duration;
+    /// use corona::Coroutine;
+    /// use futures::Future;
+    /// use tokio_core::reactor::{Core, Timeout};
+    ///
+    /// # fn main() {
+    /// let mut core = Core::new().unwrap();
+    /// let coroutine = Coroutine::with_defaults(core.handle(), |await| {
+    ///     let timeout = Timeout::new(Duration::from_millis(100), await.handle()).unwrap();
+    ///     await.future(timeout).unwrap();
+    /// });
+    /// core.run(coroutine).unwrap();
+    /// # }
+    /// ```
     pub fn future<I, E, Fut>(&self, fut: Fut) -> Result<I, E>
         where
             I: 'static,
@@ -69,6 +118,35 @@ impl<'a> Await<'a> {
         // changes to actually ensure that).
         receiver.wait().expect("A future got canceled")
     }
+    /// Blocks the current coroutine to get each element of the stream.
+    ///
+    /// This acts in a very similar way as the [`future`](#method.future) method. The difference is
+    /// it acts on a stream and produces an iterator instead of a single result. Therefore it may
+    /// (and usually will) switch the coroutines more than once.
+    ///
+    /// Similar notes as with [`future`](#method.future) apply.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use futures::stream;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let mut core = Core::new().unwrap();
+    /// let coroutine = Coroutine::with_defaults(core.handle(), |await| {
+    ///     let stream = stream::empty::<(), ()>();
+    ///     for item in await.stream(stream) {
+    ///         // Process them here
+    ///     }
+    /// });
+    /// core.run(coroutine).unwrap();
+    /// # }
+    /// ```
     pub fn stream<I, E, S>(&self, stream: S) -> StreamIterator<I, E, S>
         where
             S: Stream<Item = I, Error = E> + 'static,
@@ -77,6 +155,16 @@ impl<'a> Await<'a> {
     {
         StreamIterator::new(self, stream)
     }
+    /// Switches to another coroutine.
+    ///
+    /// This allows another coroutine to run. However, if there's no other coroutine ready to run,
+    /// this may terminate right away and continue execution. Also, it does *not* guarantee getting
+    /// more external events -- the other coroutines can do work on the data that is already
+    /// received, for example, but network events will probably arrive only after the coroutine
+    /// really waits on something or terminates. Therefore, doing CPU-intensive work in a coroutine
+    /// and repeatedly call `yield_now` is not guaranteed to work well. Use a separate thread or
+    /// something like the [`futures-cpupool`](https://crates.io/crates/futures-cpupool) crate to
+    /// off-load the heavy work.
     pub fn yield_now(&self) {
         let fut = future::ok::<_, ()>(());
         self.future(fut).unwrap();
