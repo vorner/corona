@@ -141,6 +141,8 @@ impl<'a> Await<'a> {
     /// let coroutine = Coroutine::with_defaults(core.handle(), |await| {
     ///     let stream = stream::empty::<(), ()>();
     ///     for item in await.stream(stream) {
+    ///         // Streams can contain errors, so it iterates over `Result`s.
+    ///         let item = item.unwrap();
     ///         // Process them here
     ///     }
     /// });
