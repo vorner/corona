@@ -58,6 +58,8 @@
 //!
 //! # Examples
 //!
+//! One that shows the API.
+//!
 //! ```
 //! # extern crate corona;
 //! # extern crate futures;
@@ -87,6 +89,9 @@
 //! assert_eq!(42, core.run(coroutine).unwrap());
 //! # }
 //! ```
+//!
+//! Further examples can be found in the
+//! [repository](https://github.com/vorner/corona/tree/master/examples).
 
 extern crate context;
 extern crate futures;

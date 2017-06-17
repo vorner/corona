@@ -18,3 +18,6 @@ appveyor = { repository = "vorner/corona" }
 context = "~2"
 futures = "~0.1"
 tokio-core = "~0.1"
+
+[dev-dependencies]
+tokio-io = "~0.1"
