@@ -1,3 +1,61 @@
+//! A library combining futures and coroutines.
+//!
+//! The current aim of Rust in regards to asynchronous programming is on
+//! [`futures`](https://crates.io/crates/futures). They have many good properties. However, they
+//! tend to result in very functional-looking code (eg. monadic chaining of closures through their
+//! modifiers). Some tasks are more conveniently done throuch imperative approaches.
+//!
+//! The aim of this library is to integrate coroutines with futures. It is possible to start a
+//! coroutine. The coroutine can wait for a future to complete (which'll suspend its execution, but
+//! will not block the thread ‒ the execution will switch to other futures or coroutines on the
+//! same thread). A spawned coroutine is represented through a handle that acts as a future,
+//! representing its completion. Therefore, other coroutines can wait for it, or it can be used in
+//! the usual functional way and compose it with other futures.
+//!
+//! # The cost
+//!
+//! The coroutines are *not* zero cost, at least not now. There are these costs:
+//!
+//! * Each coroutine needs a stack. The stack takes some space and is allocated dynamically.
+//!   Furthermore, a stack can't be allocated through the usual allocator, but is mapped directly
+//!   by the OS and manipulating the memory mapping of pages is relatively expensive operation (a
+//!   syscall, TLB needs to be flushed, ...). This currently happens for each spawned coroutine.
+//! * Each wait for a future inside a coroutine allocates dynamically (because it spawns a task
+//!   inside [Tokio's](https://crates.io/crates/tokio-core) reactor core.
+//!
+//! Some of these costs might be mitigated or lowered in future, but for now, expect to get
+//! somewhat lower performance with coroutines compared to using only futures.
+//!
+//! # API Stability
+//!
+//! Currently, the crate is in an experimental state. It exists mostly as a research if it is
+//! possible to provide something like async/await in Rust and integrate it with the current
+//! asynchronous stack, without adding explicit support to the language.
+//!
+//! It is obviously possible, but the ergonomics is something that needs some work. Therefore,
+//! expect the API to change, possibly in large ways.
+//!
+//! # Known problems
+//!
+//! These are the problems I'm aware of and which I want to find a solution some day.
+//!
+//! * The current API is probably inconvinient.
+//! * Many abstractions are missing. Things like waiting for a future with a timeout, or waiting
+//!   for the first of many futures or streams would come handy.
+//! * Many places have `'static` bounds on the types, even though these shouldn't be needed in
+//!   theory.
+//! * The relation with unwind safety is unclear.
+//! * No support for threads.
+//! * It relies on the tokio. It would be great if it worked with other future executors as well.
+//! * When the reactor core is dropped with some coroutines yet unfinished, their stacks and
+//!   everything on them leak.
+//!
+//! # Contribution
+//!
+//! All kinds of contributions are welcome, including reporting bugs, improving the documentation,
+//! submitting code, etc. However, the most valuable contribution for now would be trying it out
+//! and providing some feedback ‒ if the thing works, where the API needs improvements, etc.
+
 extern crate context;
 extern crate futures;
 extern crate tokio_core;
@@ -124,7 +182,11 @@ impl<'a> Await<'a> {
     /// it acts on a stream and produces an iterator instead of a single result. Therefore it may
     /// (and usually will) switch the coroutines more than once.
     ///
-    /// Similar notes as with [`future`](#method.future) apply.
+    /// Similar notes as with the [`future`](#method.future) apply.
+    ///
+    /// # Panics
+    ///
+    /// The same ones as with the [`future`](#method.future) method.
     ///
     /// # Examples
     ///
@@ -176,11 +238,19 @@ impl<'a> Await<'a> {
 type ItemOrPanic<I> = Result<I, Box<Any + Send + 'static>>;
 type ItemSender<I> = ChannelSender<ItemOrPanic<I>>;
 
+/// This is an extended [`Await`](struct.Await.html) with ability to items.
+///
+/// Just like an ordinary coroutine returns produces a single return value when it finishes and can
+/// suspend its execution using the [`Await`](struct.Await.html) parameter, a generator can do all
+/// this and, in addition, produce a serie of items of a given type through this parameter.
+///
+/// See [`Coroutine::generator`](struct.Coroutine.html#method.generator).
 pub struct Producer<'a, I: 'static> {
     await: &'a Await<'a>,
     sink: RefCell<Option<ItemSender<I>>>,
 }
 
+// TODO: Is this an abuse of Deref? Any better ways?
 impl<'a, I: 'static> Deref for Producer<'a, I> {
     type Target = Await<'a>;
 
@@ -190,12 +260,26 @@ impl<'a, I: 'static> Deref for Producer<'a, I> {
 }
 
 impl<'a, I: 'static> Producer<'a, I> {
+    /// Creates a new producer.
+    ///
+    /// While the usual way to get a producer is through the
+    /// [`Coroutine::generator`](struct.Coroutine.html#method.generator), it is also possible to
+    /// create one manually, from an [`Await`](struct.Await.html) and a channel sender of the right
+    /// type.
     pub fn new(await: &'a Await<'a>, sink: ItemSender<I>) -> Self {
         Producer {
             await,
             sink: RefCell::new(Some(sink)),
         }
     }
+    /// Pushes another value through the internal channel, effectively sending it to another
+    /// coroutine.
+    ///
+    /// This takes a value and pushes it through a channel to another coroutine. It may suspend the
+    /// execution of the current coroutine and yield to another one.
+    ///
+    /// The same notes and panics as with the [`future`](struct.Await.html#method.future) method
+    /// apply.
     pub fn produce(&self, item: I) {
         let sink = self.sink.borrow_mut().take();
         if let Some(sink) = sink {
@@ -222,6 +306,10 @@ extern "C" fn coroutine(mut transfer: Transfer) -> ! {
     unreachable!("Woken up after termination!");
 }
 
+/// A builder of coroutines.
+///
+/// This struct is the main entry point and a way to start coroutines of various kinds. It allows
+/// both starting them with default parameters and configuring them with the builder pattern.
 #[derive(Clone)]
 pub struct Coroutine {
     handle: Handle,
@@ -229,18 +317,73 @@ pub struct Coroutine {
 }
 
 impl Coroutine {
-    pub fn build(handle: Handle) -> Self {
+    /// Starts building a coroutine.
+    ///
+    /// This constructor produces a new builder for coroutines. The builder can then be used to
+    /// specify configuration of the coroutines.
+    ///
+    /// It is possible to spawn multiple coroutines from the same builder.
+    ///
+    /// # Parameters
+    ///
+    /// * `handle`: The coroutines need a reactor core to run on and schedule their control
+    ///   switches. This is the handle to the reactor core to be used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use futures::stream;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let core = Core::new().unwrap();
+    /// let builder = Coroutine::new(core.handle());
+    ///
+    /// let coroutine = builder.spawn(|await| { }).unwrap();
+    /// # }
+    ///
+    /// ```
+    pub fn new(handle: Handle) -> Self {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
         }
     }
+    /// Spawns a coroutine directly.
+    ///
+    /// This constructor spawns a coroutine with default parameters without the inconvenience of
+    /// handling a builder. It is equivalent to spawning it with an unconfigured builder.
+    ///
+    /// Unlike the [`spawn`](#method.spawn.html), this one can't fail, since the default parameters
+    /// of the builder are expected to always work (if they don't, file a bug).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use futures::stream;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let core = Core::new().unwrap();
+    ///
+    /// let coroutine = Coroutine::with_defaults(core.handle(), |await| { });
+    /// # }
+    ///
+    /// ```
     pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
         where
             R: 'static,
             Task: FnOnce(&Await) -> R + 'static,
     {
-        Coroutine::build(handle).spawn(task).unwrap()
+        Coroutine::new(handle).spawn(task).unwrap()
     }
     fn spawn_inner<Task>(&self, task: Task) -> Result<(), StackError>
         where
@@ -263,7 +406,30 @@ impl Coroutine {
 
         Ok(())
     }
-    // TODO: Do we want to make StackError part of our public API? Maybe not.
+    /// Spawns a coroutine.
+    ///
+    /// Spawns the given closure as a coroutine with the parameters configured in the current
+    /// builder.
+    ///
+    /// The closure is started right away and is run inside the call until it either yields the
+    /// control or terminates. If it yields (for whatever reason, not only through the
+    /// [`Await::yield_now`](struct.Await.html#method.yield_now) method), it'll get a chance to
+    /// continue only through running the reactor core.
+    ///
+    /// # Parameters
+    ///
+    /// * `task`: The closure to run.
+    ///
+    /// # Errors
+    ///
+    /// * The method can fail, but only if the configured stack size is invalid on the current
+    ///   system.
+    ///
+    /// # Result
+    ///
+    /// On successful call to this method, a `Future` representing the completion of the task is
+    /// provided. The future resolves either to the result of the closure or an error if the
+    /// closure panics.
     pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
         where
             R: 'static,
@@ -294,6 +460,12 @@ impl Coroutine {
             receiver
         })
     }
+    /// Spawns a generator.
+    ///
+    /// A generator is just like a coroutine (and this method is very similar to the
+    /// [`spawn`](#method.spawn) method, so most of its notes apply). It can, however, produce a
+    /// stream of items of a certain kind and has no direct return value. The return value is not a
+    /// `Future`, but a `Stream` of the produced items.
     pub fn generator<Item, Task>(&self, task: Task) -> Result<GeneratorResult<Item>, StackError>
         where
             Item: 'static,
@@ -323,6 +495,16 @@ impl Coroutine {
             receiver,
         })
     }
+    /// Configures a stack size for the coroutines.
+    ///
+    /// The method sets the stack size of the coroutines that'll be spawned from this builder. The
+    /// default stack size is platform dependent, but usually something relatively small. It is
+    /// fine for most uses that don't use recursion or big on-stack allocations.
+    ///
+    /// # Notes
+    ///
+    /// If the configured stack size is invalid, attempts to spawn coroutines will fail. However,
+    /// it is platform dependent what is considered valid (multiples of 4096 usually work).
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
         self
@@ -350,6 +532,7 @@ impl Coroutine {
     }
 }
 
+/// A `Future` representing a completion of a coroutine.
 pub struct CoroutineResult<R> {
     receiver: Receiver<TaskResult<R>>,
 }
@@ -367,6 +550,10 @@ impl<R> Future for CoroutineResult<R> {
     }
 }
 
+/// A `Stream` representing the produced items from a generator.
+///
+/// The stream will produce the items and then terminate when the generator coroutine terminates.
+/// If the coroutine panics, it produces an error.
 pub struct GeneratorResult<Item> {
     receiver: ChannelReceiver<Result<Item, Box<Any + Send + 'static>>>,
 }
@@ -406,7 +593,7 @@ mod tests {
         let s2c = s2.clone();
         let handle = core.handle();
 
-        let mut builder = Coroutine::build(handle);
+        let mut builder = Coroutine::new(handle);
         builder.stack_size(40960);
         let builder_inner = builder.clone();
 
@@ -509,7 +696,7 @@ mod tests {
     #[test]
     fn generator() {
         let mut core = Core::new().unwrap();
-        let builder = Coroutine::build(core.handle());
+        let builder = Coroutine::new(core.handle());
         let stream1 = builder.generator(|await| {
             await.produce(42);
             await.produce(12);
