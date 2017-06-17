@@ -48,7 +48,7 @@ fn main() {
                     handle_connection(await.handle(), connection);
                 },
                 // FIXME: Are all the errors recoverable?
-                Err(e) => eprintln!("An error accepting a connection: {}", e),
+                Err(e) => println!("An error accepting a connection: {}", e),
             }
         }
     });
