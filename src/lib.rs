@@ -55,6 +55,38 @@
 //! All kinds of contributions are welcome, including reporting bugs, improving the documentation,
 //! submitting code, etc. However, the most valuable contribution for now would be trying it out
 //! and providing some feedback ‒ if the thing works, where the API needs improvements, etc.
+//!
+//! # Examples
+//!
+//! ```
+//! # extern crate corona;
+//! # extern crate futures;
+//! # extern crate tokio_core;
+//! use std::time::Duration;
+//! use corona::Coroutine;
+//! use futures::Future;
+//! use tokio_core::reactor::{Core, Timeout};
+//!
+//! # fn main() {
+//! let mut core = Core::new().unwrap();
+//! let builder = Coroutine::new(core.handle());
+//! let generator = builder.generator(|producer| {
+//!     producer.produce(1);
+//!     producer.produce(2);
+//! }).unwrap();
+//! let coroutine = builder.spawn(move |await| {
+//!     for item in await.stream(generator) {
+//!         println!("{}", item.unwrap());
+//!     }
+//!
+//!     let timeout = Timeout::new(Duration::from_millis(100), await.handle()).unwrap();
+//!     await.future(timeout).unwrap();
+//!
+//!     42
+//! }).unwrap();
+//! assert_eq!(42, core.run(coroutine).unwrap());
+//! # }
+//! ```
 
 extern crate context;
 extern crate futures;
