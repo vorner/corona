@@ -75,7 +75,7 @@
 //! let generator = builder.generator(|producer| {
 //!     producer.produce(1);
 //!     producer.produce(2);
-//! }).unwrap();
+//! });
 //! let coroutine = builder.spawn(move |await| {
 //!     for item in await.stream(generator) {
 //!         println!("{}", item.unwrap());
@@ -85,7 +85,7 @@
 //!     await.future(timeout).unwrap();
 //!
 //!     42
-//! }).unwrap();
+//! });
 //! assert_eq!(42, core.run(coroutine).unwrap());
 //! # }
 //! ```
@@ -103,7 +103,7 @@ use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
-use context::stack::{ProtectedFixedSizeStack, Stack, StackError};
+use context::stack::{ProtectedFixedSizeStack, Stack};
 use futures::{Future, Async, Poll, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot::{self, Receiver};
@@ -380,7 +380,7 @@ impl Coroutine {
     /// let core = Core::new().unwrap();
     /// let builder = Coroutine::new(core.handle());
     ///
-    /// let coroutine = builder.spawn(|await| { }).unwrap();
+    /// let coroutine = builder.spawn(|await| { });
     /// # }
     ///
     /// ```
@@ -420,13 +420,13 @@ impl Coroutine {
             R: 'static,
             Task: FnOnce(&Await) -> R + 'static,
     {
-        Coroutine::new(handle).spawn(task).unwrap()
+        Coroutine::new(handle).spawn(task)
     }
-    fn spawn_inner<Task>(&self, task: Task) -> Result<(), StackError>
+    fn spawn_inner<Task>(&self, task: Task)
         where
             Task: FnOnce(Handle, RefCell<Option<Transfer>>) -> RefCell<Option<Transfer>> + 'static
     {
-        let stack = ProtectedFixedSizeStack::new(self.stack_size)?;
+        let stack = ProtectedFixedSizeStack::new(self.stack_size).expect("Invalid stack size");
         let context = unsafe { Context::new(&stack, coroutine) };
         let handle = self.handle.clone();
 
@@ -440,8 +440,6 @@ impl Coroutine {
             stack,
             task: Box::new(Some(perform)),
         });
-
-        Ok(())
     }
     /// Spawns a coroutine.
     ///
@@ -457,17 +455,18 @@ impl Coroutine {
     ///
     /// * `task`: The closure to run.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// * The method can fail, but only if the configured stack size is invalid on the current
-    ///   system.
+    /// * In case an invalid stack size has been configured. This is a panic and not an error for
+    ///   two reasons. It's very unlikely an application using coroutines could continue if it
+    ///   can't spawn them. Also, configuring invalid stack size is a programmer bug.
     ///
     /// # Result
     ///
     /// On successful call to this method, a `Future` representing the completion of the task is
     /// provided. The future resolves either to the result of the closure or an error if the
     /// closure panics.
-    pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
+    pub fn spawn<R, Task>(&self, task: Task) -> CoroutineResult<R>
         where
             R: 'static,
             Task: FnOnce(&Await) -> R + 'static,
@@ -491,11 +490,11 @@ impl Coroutine {
             transfer
         };
 
-        self.spawn_inner(perform_and_send)?;
+        self.spawn_inner(perform_and_send);
 
-        Ok(CoroutineResult {
+        CoroutineResult {
             receiver
-        })
+        }
     }
     /// Spawns a generator.
     ///
@@ -503,7 +502,7 @@ impl Coroutine {
     /// [`spawn`](#method.spawn) method, so most of its notes apply). It can, however, produce a
     /// stream of items of a certain kind and has no direct return value. The return value is not a
     /// `Future`, but a `Stream` of the produced items.
-    pub fn generator<Item, Task>(&self, task: Task) -> Result<GeneratorResult<Item>, StackError>
+    pub fn generator<Item, Task>(&self, task: Task) -> GeneratorResult<Item>
         where
             Item: 'static,
             Task: FnOnce(&Producer<Item>) + 'static,
@@ -526,11 +525,11 @@ impl Coroutine {
             transfer
         };
 
-        self.spawn_inner(generate)?;
+        self.spawn_inner(generate);
 
-        Ok(GeneratorResult {
+        GeneratorResult {
             receiver,
-        })
+        }
     }
     /// Configures a stack size for the coroutines.
     ///
@@ -538,10 +537,14 @@ impl Coroutine {
     /// default stack size is platform dependent, but usually something relatively small. It is
     /// fine for most uses that don't use recursion or big on-stack allocations.
     ///
+    /// Also, using too many different stack sizes in the same thread is inefficient. The library
+    /// caches and reuses stacks, but it can do so only with stacks of the same size.
+    ///
     /// # Notes
     ///
-    /// If the configured stack size is invalid, attempts to spawn coroutines will fail. However,
-    /// it is platform dependent what is considered valid (multiples of 4096 usually work).
+    /// If the configured stack size is invalid, attempts to spawn coroutines will fail with a
+    /// panic. However, it is platform dependent what is considered valid (multiples of 4096
+    /// usually work).
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
         self
@@ -638,10 +641,10 @@ mod tests {
             let result = builder_inner.spawn(move |_| {
                 s2c.store(true, Ordering::Relaxed);
                 42
-            }).unwrap();
+            });
             s1c.store(true, Ordering::Relaxed);
             result
-        }).unwrap();
+        });
 
         // Both coroutines run to finish
         assert!(s1.load(Ordering::Relaxed), "The outer closure didn't run");
@@ -737,19 +740,19 @@ mod tests {
         let stream1 = builder.generator(|await| {
             await.produce(42);
             await.produce(12);
-        }).unwrap();
+        });
         let stream2 = builder.generator(|await| {
             for item in await.stream(stream1) {
                 await.produce(item.unwrap());
             }
-        }).unwrap();
+        });
         let done = builder.spawn(move |await| {
             let mut result = Vec::new();
             for item in await.stream(stream2) {
                 result.push(item.unwrap());
             }
             assert_eq!(vec![42, 12], result);
-        }).unwrap();
+        });
         core.run(done).unwrap();
     }
 }
