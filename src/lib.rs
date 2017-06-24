@@ -19,7 +19,8 @@
 //! * Each coroutine needs a stack. The stack takes some space and is allocated dynamically.
 //!   Furthermore, a stack can't be allocated through the usual allocator, but is mapped directly
 //!   by the OS and manipulating the memory mapping of pages is relatively expensive operation (a
-//!   syscall, TLB needs to be flushed, ...). This currently happens for each spawned coroutine.
+//!   syscall, TLB needs to be flushed, ...). The stacks are cached and reused, but still, creating
+//!   them has a cost.
 //! * Each wait for a future inside a coroutine allocates dynamically (because it spawns a task
 //!   inside [Tokio's](https://crates.io/crates/tokio-core) reactor core.
 //!
@@ -103,7 +104,7 @@ use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
-use context::stack::{ProtectedFixedSizeStack, Stack};
+use context::stack::Stack;
 use futures::{Future, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot;
@@ -113,6 +114,7 @@ use tokio_core::reactor::Handle;
 pub mod results;
 
 mod errors;
+mod stack_cache;
 mod switch;
 
 pub use errors::TaskFailed;
@@ -328,7 +330,7 @@ impl<'a, I: 'static> Producer<'a, I> {
     }
 }
 
-extern "C" fn coroutine(mut transfer: Transfer) -> ! {
+fn coroutine_internal(mut transfer: Transfer) -> Context {
     let switch = Switch::get();
     let result = match switch {
         Switch::StartTask { stack, mut task } => {
@@ -338,7 +340,11 @@ extern "C" fn coroutine(mut transfer: Transfer) -> ! {
         _ => panic!("Invalid switch instruction on coroutine entry"),
     };
     result.put();
-    let context = transfer.context;
+    transfer.context
+}
+
+extern "C" fn coroutine(transfer: Transfer) -> ! {
+    let context = coroutine_internal(transfer);
     unsafe { context.resume(0) };
     unreachable!("Woken up after termination!");
 }
@@ -426,7 +432,8 @@ impl Coroutine {
         where
             Task: FnOnce(Handle, RefCell<Option<Transfer>>) -> RefCell<Option<Transfer>> + 'static
     {
-        let stack = ProtectedFixedSizeStack::new(self.stack_size).expect("Invalid stack size");
+        let stack = stack_cache::get(self.stack_size);
+        assert_eq!(stack.len(), self.stack_size);
         let context = unsafe { Context::new(&stack, coroutine) };
         let handle = self.handle.clone();
 

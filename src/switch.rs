@@ -5,6 +5,8 @@ use context::stack::ProtectedFixedSizeStack;
 use futures::Future;
 use tokio_core::reactor::Handle;
 
+use stack_cache;
+
 // A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
 pub trait BoxableTask {
     fn perform(&mut self, Transfer) -> Transfer;
@@ -57,7 +59,7 @@ impl Switch {
         match switch {
             Destroy { stack } => {
                 drop(transfer.context);
-                drop(stack);
+                stack_cache::put(stack);
             },
             ScheduleWakeup { after, handle } => {
                 // TODO: We may want some kind of our own future here and implement Drop, so we can
