@@ -755,4 +755,23 @@ mod tests {
         });
         core.run(done).unwrap();
     }
+
+    /*
+     TODO: This thing deadlocks. Any chance of preventing it from compilation?
+    #[test]
+    fn blocks() {
+        let mut core = Core::new().unwrap();
+        let (sender, receiver) = oneshot::channel();
+        let handle = core.handle();
+        let c = Coroutine::with_defaults(handle.clone(), move |_await| {
+            core.run(receiver).unwrap();
+        });
+        Coroutine::with_defaults(handle, |await| {
+            let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
+            await.future(timeout).unwrap();
+            drop(sender.send(42));
+        });
+        c.wait().unwrap();
+    }
+    */
 }
