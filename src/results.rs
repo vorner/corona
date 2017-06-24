@@ -1,5 +1,10 @@
-use futures::Stream;
+use std::any::Any;
 
+use futures::{Async, Future, Poll, Stream};
+use futures::unsync::oneshot::Receiver;
+use futures::unsync::mpsc::Receiver as ChannelReceiver;
+
+use errors::{TaskFailed, TaskResult};
 use super::Await;
 
 /// A wrapper to asynchronously iterate through a stream.
@@ -84,4 +89,55 @@ impl<'a, I, E, S> Iterator for StreamIterator<'a, I, E, S>
     }
 }
 
+/// A `Future` representing a completion of a coroutine.
+pub struct CoroutineResult<R> {
+    receiver: Receiver<TaskResult<R>>,
+}
+
+impl<R> CoroutineResult<R> {
+    pub(crate) fn new(receiver: Receiver<TaskResult<R>>) -> Self {
+        Self { receiver }
+    }
+}
+
+impl<R> Future for CoroutineResult<R> {
+    type Item = R;
+    type Error = TaskFailed;
+    fn poll(&mut self) -> Poll<R, TaskFailed> {
+        match self.receiver.poll() {
+            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
+            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(_) => Err(TaskFailed::Lost),
+        }
+    }
+}
+
+/// A `Stream` representing the produced items from a generator.
+///
+/// The stream will produce the items and then terminate when the generator coroutine terminates.
+/// If the coroutine panics, it produces an error.
+pub struct GeneratorResult<Item> {
+    receiver: ChannelReceiver<Result<Item, Box<Any + Send + 'static>>>,
+}
+
+impl<Item> GeneratorResult<Item> {
+    pub(crate) fn new(receiver: ChannelReceiver<Result<Item, Box<Any + Send + 'static>>>) -> Self {
+        Self { receiver }
+    }
+}
+
+impl<Item> Stream for GeneratorResult<Item> {
+    type Item = Item;
+    type Error = Box<Any + Send + 'static>;
+    fn poll(&mut self) -> Poll<Option<Item>, Self::Error> {
+        match self.receiver.poll() {
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
+            Ok(Async::Ready(Some(Ok(item)))) => Ok(Async::Ready(Some(item))),
+            Ok(Async::Ready(Some(Err(e)))) => Err(e),
+            Err(_) => unreachable!("Error from mpsc channel ‒ Can Not Happen"),
+        }
+    }
+}
 

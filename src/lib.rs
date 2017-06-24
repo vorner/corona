@@ -104,10 +104,10 @@ use std::panic::{self, AssertUnwindSafe};
 
 use context::{Context, Transfer};
 use context::stack::{ProtectedFixedSizeStack, Stack};
-use futures::{Future, Async, Poll, Sink, Stream};
+use futures::{Future, Sink, Stream};
 use futures::future;
-use futures::unsync::oneshot::{self, Receiver};
-use futures::unsync::mpsc::{self, Receiver as ChannelReceiver, Sender as ChannelSender};
+use futures::unsync::oneshot;
+use futures::unsync::mpsc::{self, Sender as ChannelSender};
 use tokio_core::reactor::Handle;
 
 pub mod results;
@@ -118,7 +118,7 @@ mod switch;
 pub use errors::TaskFailed;
 
 use errors::TaskResult;
-use results::StreamIterator;
+use results::{CoroutineResult, GeneratorResult, StreamIterator};
 use switch::Switch;
 
 /// An asynchronous context.
@@ -436,10 +436,11 @@ impl Coroutine {
             transfer.into_inner().unwrap()
         };
 
-        Coroutine::run_child(context, Switch::StartTask {
+        let switch = Switch::StartTask {
             stack,
             task: Box::new(Some(perform)),
-        });
+        };
+        switch.run_child(context);
     }
     /// Spawns a coroutine.
     ///
@@ -492,9 +493,7 @@ impl Coroutine {
 
         self.spawn_inner(perform_and_send);
 
-        CoroutineResult {
-            receiver
-        }
+        CoroutineResult::new(receiver)
     }
     /// Spawns a generator.
     ///
@@ -527,9 +526,7 @@ impl Coroutine {
 
         self.spawn_inner(generate);
 
-        GeneratorResult {
-            receiver,
-        }
+        GeneratorResult::new(receiver)
     }
     /// Configures a stack size for the coroutines.
     ///
@@ -548,67 +545,6 @@ impl Coroutine {
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
         self
-    }
-    fn run_child(context: Context, switch: Switch) {
-        switch.put();
-        let transfer = unsafe { context.resume(0) };
-        let switch = Switch::get();
-        match switch {
-            Switch::Destroy { stack } => {
-                drop(transfer.context);
-                drop(stack);
-            },
-            Switch::ScheduleWakeup { after, handle } => {
-                // TODO: We may want some kind of our own future here and implement Drop, so we can
-                // unwind the stack and destroy it.
-                let wakeup = after.then(move |_| {
-                    Self::run_child(transfer.context, Switch::Resume);
-                    Ok(())
-                });
-                handle.spawn(wakeup);
-            },
-            _ => unreachable!("Invalid switch instruction when switching out"),
-        }
-    }
-}
-
-/// A `Future` representing a completion of a coroutine.
-pub struct CoroutineResult<R> {
-    receiver: Receiver<TaskResult<R>>,
-}
-
-impl<R> Future for CoroutineResult<R> {
-    type Item = R;
-    type Error = TaskFailed;
-    fn poll(&mut self) -> Poll<R, TaskFailed> {
-        match self.receiver.poll() {
-            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
-            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(_) => Err(TaskFailed::Lost),
-        }
-    }
-}
-
-/// A `Stream` representing the produced items from a generator.
-///
-/// The stream will produce the items and then terminate when the generator coroutine terminates.
-/// If the coroutine panics, it produces an error.
-pub struct GeneratorResult<Item> {
-    receiver: ChannelReceiver<Result<Item, Box<Any + Send + 'static>>>,
-}
-
-impl<Item> Stream for GeneratorResult<Item> {
-    type Item = Item;
-    type Error = Box<Any + Send + 'static>;
-    fn poll(&mut self) -> Poll<Option<Item>, Self::Error> {
-        match self.receiver.poll() {
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-            Ok(Async::Ready(Some(Ok(item)))) => Ok(Async::Ready(Some(item))),
-            Ok(Async::Ready(Some(Err(e)))) => Err(e),
-            Err(_) => unreachable!("Error from mpsc channel ‒ Can Not Happen"),
-        }
     }
 }
 
