@@ -17,3 +17,6 @@
 * Wait for future with timeout?
 * Document why the unsafe blocks are in fact safe
 * Build fails on half of appveyor ‒ seems like some issue with compiler, look if it can be made work
+* Document the way to deadlock
+* Can we rely on *any* future executor?
+* Generators might want to run only when next is called on them
