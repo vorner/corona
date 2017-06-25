@@ -103,7 +103,7 @@ use std::cell::RefCell;
 use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
 
-use context::{Context, Transfer};
+use context::Context;
 use context::stack::Stack;
 use futures::{Future, Sink, Stream};
 use futures::future;
@@ -134,7 +134,7 @@ use switch::Switch;
 ///
 /// The downside is a little bit less convenience on use.
 pub struct Await<'a> {
-    transfer: &'a RefCell<Option<Transfer>>,
+    context: &'a RefCell<Option<Context>>,
     handle: &'a Handle,
 }
 
@@ -198,15 +198,13 @@ impl<'a> Await<'a> {
             after: Box::new(task),
             handle: self.handle.clone(),
         };
-        switch.put();
-        let context = self.transfer
+        let context = self.context
             .borrow_mut()
             .take()
-            .unwrap()
-            .context;
-        let transfer = unsafe { context.resume(0) };
-        *self.transfer.borrow_mut() = Some(transfer);
-        match Switch::get() {
+            .unwrap();
+        let (reply, context) = switch.exchange(context);
+        *self.context.borrow_mut() = Some(context);
+        match reply {
             Switch::Resume => (),
             _ => panic!("Invalid instruction on wakeup"),
         }
@@ -330,25 +328,6 @@ impl<'a, I: 'static> Producer<'a, I> {
     }
 }
 
-fn coroutine_internal(mut transfer: Transfer) -> Context {
-    let switch = Switch::get();
-    let result = match switch {
-        Switch::StartTask { stack, mut task } => {
-            transfer = task.perform(transfer);
-            Switch::Destroy { stack }
-        },
-        _ => panic!("Invalid switch instruction on coroutine entry"),
-    };
-    result.put();
-    transfer.context
-}
-
-extern "C" fn coroutine(transfer: Transfer) -> ! {
-    let context = coroutine_internal(transfer);
-    unsafe { context.resume(0) };
-    unreachable!("Woken up after termination!");
-}
-
 /// A builder of coroutines.
 ///
 /// This struct is the main entry point and a way to start coroutines of various kinds. It allows
@@ -430,24 +409,16 @@ impl Coroutine {
     }
     fn spawn_inner<Task>(&self, task: Task)
         where
-            Task: FnOnce(Handle, RefCell<Option<Transfer>>) -> RefCell<Option<Transfer>> + 'static
+            Task: FnOnce(Handle, RefCell<Option<Context>>) -> RefCell<Option<Context>> + 'static
     {
-        let stack = stack_cache::get(self.stack_size);
-        assert_eq!(stack.len(), self.stack_size);
-        let context = unsafe { Context::new(&stack, coroutine) };
         let handle = self.handle.clone();
 
-        let perform = move |transfer| {
-            let transfer = RefCell::new(Some(transfer));
-            let transfer = task(handle, transfer);
-            transfer.into_inner().unwrap()
+        let perform = move |context| {
+            let context = RefCell::new(Some(context));
+            let context = task(handle, context);
+            context.into_inner().unwrap()
         };
-
-        let switch = Switch::StartTask {
-            stack,
-            task: Box::new(Some(perform)),
-        };
-        switch.run_child(context);
+        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
     }
     /// Spawns a coroutine.
     ///
@@ -481,10 +452,10 @@ impl Coroutine {
     {
         let (sender, receiver) = oneshot::channel();
 
-        let perform_and_send = move |handle, transfer| {
+        let perform_and_send = move |handle, context| {
             {
                 let await = Await {
-                    transfer: &transfer,
+                    context: &context,
                     handle: &handle,
                 };
                 let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&await))) {
@@ -495,7 +466,7 @@ impl Coroutine {
                 // interested, which is fine by us.
                 drop(sender.send(result));
             }
-            transfer
+            context
         };
 
         self.spawn_inner(perform_and_send);
@@ -515,10 +486,10 @@ impl Coroutine {
     {
         let (sender, receiver) = mpsc::channel(1);
 
-        let generate = move |handle, transfer| {
+        let generate = move |handle, context| {
             {
                 let await = Await {
-                    transfer: &transfer,
+                    context: &context,
                     handle: &handle,
                 };
                 let producer = Producer::new(&await, sender.clone());
@@ -528,7 +499,7 @@ impl Coroutine {
                     Err(panic) => drop(await.future(sender.send(Err(panic)))),
                 }
             }
-            transfer
+            context
         };
 
         self.spawn_inner(generate);
