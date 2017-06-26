@@ -4,59 +4,77 @@ extern crate tokio_core;
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use corona::Coroutine;
 use futures::Future;
 use futures::future;
-use tokio_core::reactor::{Core, Timeout};
+use tokio_core::reactor::Core;
+
+#[derive(Clone, Default)]
+struct Status(Rc<Cell<bool>>, Rc<Cell<bool>>);
 
 /// Check cleaning up the coroutines if the core is dropped and the coroutines haven't resolved
 /// yet.
 #[test]
 fn cleanup_panic() {
+    let coroutine_get = |handle, status: Status| {
+        Coroutine::with_defaults(handle, move |await| {
+            let fut = future::lazy(|| Ok::<_, ()>(()));
+            status.0.set(true);
+            drop(await.future(fut));
+            status.1.set(true);
+        })
+    };
     let core = Core::new().unwrap();
     let handle = core.handle();
-    let called_first = Rc::new(Cell::new(false));
-    let called_first_cp = called_first.clone();
-    let called_second = Rc::new(Cell::new(false));
-    let called_second_cp = called_second.clone();
-    let holds_rc = Rc::new(());
-    let holds_weak = Rc::downgrade(&holds_rc);
-    let finished = Coroutine::with_defaults(core.handle(), move |await| {
-        let timeout = Timeout::new(Duration::from_millis(100), await.handle()).unwrap();
-        called_first_cp.set(true);
-        let _holds_rc = holds_rc; // Make sure this one gets stolen to our stack
-        drop(await.future(timeout)); // Ignore the result
-        called_second_cp.set(true);
-    });
+    let status = Status::default();
+    let finished = coroutine_get(core.handle(), status.clone());
     // Check it got to the place where it waits for the future
-    assert!(called_first.get());
-    assert!(!called_second.get());
+    assert!(status.0.get());
+    assert!(!status.1.get());
     // And the RC is still held by it
-    assert!(holds_weak.upgrade().is_some());
+    assert_eq!(2, Rc::strong_count(&status.0));
     // When we drop the core, it also drops the future and cleans up the coroutine
     drop(core);
-    assert!(!called_second.get());
-    assert!(holds_weak.upgrade().is_none());
+    assert!(!status.1.get());
+    assert_eq!(1, Rc::strong_count(&status.0));
     finished.wait().unwrap_err();
 
     // If we start another similar coroutine now, it gets destroyed on the call to the await right
     // away.
-    called_first.set(false);
-    let called_first_cp = called_first.clone();
-    let called_second_cp = called_second.clone();
-    let holds_rc = Rc::new(());
-    let holds_weak = Rc::downgrade(&holds_rc);
-    let finished = Coroutine::with_defaults(handle, move |await| {
-        let fut = future::lazy(|| Ok::<_, ()>(()));
-        called_first_cp.set(true);
-        let _holds_rc = holds_rc;
-        drop(await.future(fut));
-        called_second_cp.set(true);
-    });
-    assert!(called_first.get());
-    assert!(!called_second.get());
-    assert!(holds_weak.upgrade().is_none());
+    status.0.set(false);
+    let finished = coroutine_get(handle, status.clone());
+    assert!(status.0.get());
+    assert!(!status.1.get());
+    assert_eq!(1, Rc::strong_count(&status.0));
     finished.wait().unwrap_err();
+}
+
+/// Check cleaning up with manual handling of being dropped.
+#[test]
+fn cleanup_nopanic() {
+    let core = Core::new().unwrap();
+    let status = Status::default();
+    let status_cp = status.clone();
+    let finished = Coroutine::with_defaults(core.handle(), move |await| {
+        let fut = future::lazy(|| Ok::<_, ()>(()));
+        status_cp.0.set(true);
+        await.future_cleanup(fut).unwrap_err();
+        status_cp.1.set(true);
+        // Another one still returns error
+        let fut2 = future::lazy(|| Ok::<_, ()>(()));
+        await.future_cleanup(fut2).unwrap_err();
+    });
+    assert!(status.0.get());
+    assert!(!status.1.get());
+    // And the RC is still held by it
+    assert_eq!(2, Rc::strong_count(&status.0));
+
+    // The coroutine finishes once we drop the core. Note that it finishes sucessfully, not
+    // panicking.
+    drop(core);
+    assert!(status.1.get());
+    // And the RC is still held by it
+    assert_eq!(1, Rc::strong_count(&status.0));
+    finished.wait().unwrap();
 }
