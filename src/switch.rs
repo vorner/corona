@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
-use futures::Future;
+use futures::{Async, Future, Poll};
 use tokio_core::reactor::Handle;
 
 use stack_cache;
@@ -22,6 +22,38 @@ impl<F: FnOnce(Context) -> Context> BoxableTask for Option<F> {
 
 /// A fake Box<FnOnce(Context) -> Context>.
 type BoxedTask = Box<BoxableTask>;
+
+/// A future that a coroutine waits on.
+type WakeupAfter = Box<Future<Item = (), Error = ()>>;
+
+struct Wakeup {
+    after: WakeupAfter,
+    context: Option<Context>,
+}
+
+impl Future for Wakeup {
+    type Item = ();
+    type Error = ();
+    fn poll(&mut self) -> Poll<(), ()> {
+        assert!(self.context.is_some());
+        match self.after.poll() {
+            Ok(Async::Ready(())) => {
+                Switch::Resume.run_child(self.context.take().unwrap());
+                Ok(Async::Ready(()))
+            }
+            other => other,
+        }
+    }
+}
+
+impl Drop for Wakeup {
+    fn drop(&mut self) {
+        if let Some(context) = self.context.take() {
+            // In case the future hasn't fired, ask the coroutine to clean up
+            Switch::Cleanup.run_child(context);
+        }
+    }
+}
 
 /// Execution of a coroutine.
 ///
@@ -69,11 +101,13 @@ pub enum Switch {
     },
     /// Please wake the sending coroutine once the `after` future resolves.
     ScheduleWakeup {
-        after: Box<Future<Item = (), Error = ()>>,
+        after: WakeupAfter,
         handle: Handle,
     },
     /// Continue operation, the future is resolved.
     Resume,
+    /// Abort the coroutine and clean up the resources.
+    Cleanup,
     /// Get rid of the sending coroutine, it terminated.
     Destroy {
         stack: ProtectedFixedSizeStack,
@@ -119,12 +153,10 @@ impl Switch {
                 stack_cache::put(stack);
             },
             ScheduleWakeup { after, handle } => {
-                // TODO: We may want some kind of our own future here and implement Drop, so we can
-                // unwind the stack and destroy it.
-                let wakeup = after.then(move |_| {
-                    Resume.run_child(context);
-                    Ok(())
-                });
+                let wakeup = Wakeup {
+                    context: Some(context),
+                    after,
+                };
                 handle.spawn(wakeup);
             },
             _ => unreachable!("Invalid switch instruction when switching out"),
@@ -139,3 +171,23 @@ impl Switch {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+
+    #[test]
+    fn switch_coroutine() {
+        let called = Rc::new(Cell::new(false));
+        let called_cp = called.clone();
+        let task = move |context| {
+            called_cp.set(true);
+            context
+        };
+        Switch::run_new_coroutine(40960, Box::new(Some(task)));
+        assert!(called.get());
+        assert_eq!(1, Rc::strong_count(&called));
+    }
+}

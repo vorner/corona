@@ -140,4 +140,3 @@ impl<Item> Stream for GeneratorResult<Item> {
         }
     }
 }
-

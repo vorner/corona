@@ -99,7 +99,7 @@ extern crate futures;
 extern crate tokio_core;
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
 
@@ -117,7 +117,7 @@ mod errors;
 mod stack_cache;
 mod switch;
 
-pub use errors::TaskFailed;
+pub use errors::{Dropped, TaskFailed};
 
 use errors::TaskResult;
 use results::{CoroutineResult, GeneratorResult, StreamIterator};
@@ -135,6 +135,7 @@ use switch::Switch;
 /// The downside is a little bit less convenience on use.
 pub struct Await<'a> {
     context: &'a RefCell<Option<Context>>,
+    dropped: Cell<bool>,
     handle: &'a Handle,
 }
 
@@ -187,6 +188,17 @@ impl<'a> Await<'a> {
             E: 'static,
             Fut: Future<Item = I, Error = E> + 'static,
     {
+        self.future_cleanup(fut).unwrap()
+    }
+    pub fn future_cleanup<I, E, Fut>(&self, fut: Fut) -> Result<Result<I, E>, Dropped>
+        where
+            I: 'static,
+            E: 'static,
+            Fut: Future<Item = I, Error = E> + 'static,
+    {
+        if self.dropped.get() {
+            return Err(Dropped);
+        }
         let (sender, receiver) = oneshot::channel();
         let task = fut.then(move |r| {
             // Errors are uninteresting - just the listener missing
@@ -206,12 +218,16 @@ impl<'a> Await<'a> {
         *self.context.borrow_mut() = Some(context);
         match reply {
             Switch::Resume => (),
+            Switch::Cleanup => {
+                self.dropped.set(true);
+                return Err(Dropped);
+            },
             _ => panic!("Invalid instruction on wakeup"),
         }
         // It is safe to .wait(), because once we are resumed, the future already went through.
         // It shouldn't happen that we got canceled under normal circumstances (may need API
         // changes to actually ensure that).
-        receiver.wait().expect("A future got canceled")
+        Ok(receiver.wait().expect("A future should never get dropped"))
     }
     /// Blocks the current coroutine to get each element of the stream.
     ///
@@ -456,6 +472,7 @@ impl Coroutine {
             {
                 let await = Await {
                     context: &context,
+                    dropped: Cell::new(false),
                     handle: &handle,
                 };
                 let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&await))) {
@@ -490,6 +507,7 @@ impl Coroutine {
             {
                 let await = Await {
                     context: &context,
+                    dropped: Cell::new(false),
                     handle: &handle,
                 };
                 let producer = Producer::new(&await, sender.clone());
