@@ -1,9 +1,6 @@
 * Unclean shutdowns
-  - When the Core drops we need to get rid of all the waiting stacks and
-    everything on them somehow.
-  - Using panic to unwind the waiting coroutine might work, but might be
-    problematic in certain situations. Dropping just the stack doesn't seem
-    good either.
+  - Cleanup iterators and generators
+  - What do we do during a panic? Configuration option? But only on the non-cleanup methods?
 * documentation, etc
 * Examples
 * External tests
@@ -18,3 +15,6 @@
 * Document the way to deadlock
 * Can we rely on *any* future executor?
 * Generators might want to run only when next is called on them
+  - How will their clean up work?
+* https://github.com/laumann/compiletest-rs
+  - Try that we can't block inside a future modifier
