@@ -11,12 +11,12 @@ use stack_cache;
 
 /// A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
 pub trait BoxableTask {
-    fn perform(&mut self, Context) -> Context;
+    fn perform(&mut self, Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack);
 }
 
-impl<F: FnOnce(Context) -> Context> BoxableTask for Option<F> {
-    fn perform(&mut self, context: Context) -> Context {
-        self.take().unwrap()(context)
+impl<F: FnOnce(Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack)> BoxableTask for Option<F> {
+    fn perform(&mut self, context: Context, stack: ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack) {
+        self.take().unwrap()(context, stack)
     }
 }
 
@@ -64,7 +64,8 @@ fn coroutine_internal(transfer: Transfer) -> Context {
     let switch = Switch::get();
     let result = match switch {
         Switch::StartTask { stack, mut task } => {
-            context = task.perform(context);
+            let (ctx, stack) = task.perform(context, stack);
+            context = ctx;
             Switch::Destroy { stack }
         },
         _ => panic!("Invalid switch instruction on coroutine entry"),
@@ -182,9 +183,9 @@ mod tests {
     fn switch_coroutine() {
         let called = Rc::new(Cell::new(false));
         let called_cp = called.clone();
-        let task = move |context| {
+        let task = move |context, stack| {
             called_cp.set(true);
-            context
+            (context, stack)
         };
         Switch::run_new_coroutine(40960, Box::new(Some(task)));
         assert!(called.get());

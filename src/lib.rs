@@ -102,9 +102,10 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::panic::{self, AssertUnwindSafe};
+use std::thread;
 
 use context::Context;
-use context::stack::Stack;
+use context::stack::{Stack, ProtectedFixedSizeStack};
 use futures::{Future, Sink, Stream};
 use futures::future;
 use futures::unsync::oneshot;
@@ -136,6 +137,8 @@ use switch::Switch;
 pub struct Await<'a> {
     context: &'a RefCell<Option<Context>>,
     dropped: Cell<bool>,
+    leak_on_panic: bool,
+    stack: &'a RefCell<Option<ProtectedFixedSizeStack>>,
     handle: &'a Handle,
 }
 
@@ -188,8 +191,42 @@ impl<'a> Await<'a> {
             E: 'static,
             Fut: Future<Item = I, Error = E> + 'static,
     {
-        self.future_cleanup(fut).unwrap()
+        match self.future_cleanup(fut) {
+            Ok(result) => result,
+            Err(Dropped) => {
+                if self.leak_on_panic && thread::panicking() {
+                    let stack = self.stack
+                        .borrow_mut()
+                        .take()
+                        .unwrap();
+                    self.switch(Switch::Destroy { stack });
+                    unreachable!();
+                } else {
+                    panic!("Cleaning up the coroutine stack because the reactor Core got dropped");
+                }
+            }
+        }
     }
+    // Switch out of the current coroutine and back
+    fn switch(&self, switch: Switch) -> Switch {
+        let context = self.context
+            .borrow_mut()
+            .take()
+            .unwrap();
+        let (reply, context) = switch.exchange(context);
+        *self.context.borrow_mut() = Some(context);
+        reply
+    }
+    /// Blocks the current coroutine, just like [`future`](#method.future), but doesn't panic.
+    ///
+    /// This works similar to the `future` method. However, it signals if the reactor `Core` has
+    /// been destroyed by returning `Err(Dropped)` instead of panicking. This can be used to
+    /// manually clean up the coroutine instead of letting a panic do that.
+    ///
+    /// This is important especially in cases when clean shutdown is needed even when the `Core` in
+    /// the main coroutine is destroyed during a panic, since the `future` method either causes a
+    /// double panic (making the program abort) or doesn't do any cleanup at all, depending on the
+    /// configuration.
     pub fn future_cleanup<I, E, Fut>(&self, fut: Fut) -> Result<Result<I, E>, Dropped>
         where
             I: 'static,
@@ -210,13 +247,7 @@ impl<'a> Await<'a> {
             after: Box::new(task),
             handle: self.handle.clone(),
         };
-        let context = self.context
-            .borrow_mut()
-            .take()
-            .unwrap();
-        let (reply, context) = switch.exchange(context);
-        *self.context.borrow_mut() = Some(context);
-        match reply {
+        match self.switch(switch) {
             Switch::Resume => (),
             Switch::Cleanup => {
                 self.dropped.set(true);
@@ -352,6 +383,7 @@ impl<'a, I: 'static> Producer<'a, I> {
 pub struct Coroutine {
     handle: Handle,
     stack_size: usize,
+    leak_on_panic: bool,
 }
 
 impl Coroutine {
@@ -389,6 +421,7 @@ impl Coroutine {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
+            leak_on_panic: false,
         }
     }
     /// Spawns a coroutine directly.
@@ -425,14 +458,16 @@ impl Coroutine {
     }
     fn spawn_inner<Task>(&self, task: Task)
         where
-            Task: FnOnce(Handle, RefCell<Option<Context>>) -> RefCell<Option<Context>> + 'static
+            Task: FnOnce(Handle, RefCell<Option<Context>>, RefCell<Option<ProtectedFixedSizeStack>>)
+                -> (RefCell<Option<Context>>, RefCell<Option<ProtectedFixedSizeStack>>) + 'static
     {
         let handle = self.handle.clone();
 
-        let perform = move |context| {
+        let perform = move |context, stack| {
             let context = RefCell::new(Some(context));
-            let context = task(handle, context);
-            context.into_inner().unwrap()
+            let stack = RefCell::new(Some(stack));
+            let (context, stack) = task(handle, context, stack);
+            (context.into_inner().unwrap(), stack.into_inner().unwrap())
         };
         Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
     }
@@ -467,12 +502,15 @@ impl Coroutine {
             Task: FnOnce(&Await) -> R + 'static,
     {
         let (sender, receiver) = oneshot::channel();
+        let leak = self.leak_on_panic;
 
-        let perform_and_send = move |handle, context| {
+        let perform_and_send = move |handle, context, stack| {
             {
                 let await = Await {
                     context: &context,
                     dropped: Cell::new(false),
+                    leak_on_panic: leak,
+                    stack: &stack,
                     handle: &handle,
                 };
                 let result = match panic::catch_unwind(AssertUnwindSafe(move || task(&await))) {
@@ -483,7 +521,7 @@ impl Coroutine {
                 // interested, which is fine by us.
                 drop(sender.send(result));
             }
-            context
+            (context, stack)
         };
 
         self.spawn_inner(perform_and_send);
@@ -502,12 +540,15 @@ impl Coroutine {
             Task: FnOnce(&Producer<Item>) + 'static,
     {
         let (sender, receiver) = mpsc::channel(1);
+        let leak = self.leak_on_panic;
 
-        let generate = move |handle, context| {
+        let generate = move |handle, context, stack| {
             {
                 let await = Await {
                     context: &context,
                     dropped: Cell::new(false),
+                    leak_on_panic: leak,
+                    stack: &stack,
                     handle: &handle,
                 };
                 let producer = Producer::new(&await, sender.clone());
@@ -517,7 +558,7 @@ impl Coroutine {
                     Err(panic) => drop(await.future(sender.send(Err(panic)))),
                 }
             }
-            context
+            (context, stack)
         };
 
         self.spawn_inner(generate);
@@ -540,6 +581,21 @@ impl Coroutine {
     /// usually work).
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
+        self
+    }
+    /// Configures the leak on panic option.
+    ///
+    /// If the reactor `Core` is dropped, any outstanding coroutines are cleaned up by panicking
+    /// from the function they block on (if it is not one of the `_cleanup` variants). However, if
+    /// the `Core` is dropped during panick, panicking inside the coroutine would abort the
+    /// program.
+    ///
+    /// This option allows skipping the cleanups. Instead of aborting the program, the resources on
+    /// the coroutines' stacks are leaked.
+    ///
+    /// The `_cleanup` routines still return `Err(Dropped)` and allow for manual cleanup.
+    pub fn leak_on_panic(&mut self, leak: bool) -> &mut Self {
+        self.leak_on_panic = leak;
         self
     }
 }

@@ -1,6 +1,5 @@
 * Unclean shutdowns
   - Cleanup iterators and generators
-  - What do we do during a panic? Configuration option? But only on the non-cleanup methods?
 * documentation, etc
 * Examples
 * External tests
