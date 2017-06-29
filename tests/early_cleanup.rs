@@ -8,8 +8,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use corona::{Await, Coroutine};
-use futures::Future;
+use futures::{Future, Stream};
 use futures::future::{self, BoxFuture, Either};
+use futures::stream::{self, BoxStream};
 use tokio_core::reactor::{Core, Timeout};
 
 #[derive(Clone, Default)]
@@ -157,4 +158,59 @@ fn leak_main_panic() {
         Ok(Either::A(_)) => panic!("The coroutine resolved"),
         Ok(Either::B(_)) => (),
     }
+}
+
+fn no_stream() -> BoxStream<(), ()> {
+    stream::futures_unordered(vec![futures::empty::<(), ()>()]).boxed()
+}
+
+/// Tests the explicit no-panic cleanup of a coroutine blocked on a stream.
+#[test]
+fn stream_cleanup() {
+    fn do_test(leak_on_panic: bool) {
+        let core = Core::new().unwrap();
+        let no_stream = no_stream();
+        let status = Status::default();
+        let status_cp = status.clone();
+        let finished = Coroutine::new(core.handle())
+            .leak_on_panic(leak_on_panic)
+            .spawn(move |await| {
+                status_cp.0.set(true);
+                for item in await.stream_cleanup(no_stream) {
+                    if item.is_err() {
+                        status_cp.1.set(true);
+                        return;
+                    }
+                }
+                unreachable!();
+            });
+        status.before_drop();
+        panic_core(core);
+        status.after_drop(false);
+        finished.wait().unwrap();
+    }
+    do_test(true);
+    do_test(false);
+}
+
+/// Tests the implicit panic-based cleanup of a stream
+#[test]
+fn stream_panic() {
+    let core = Core::new().unwrap();
+    let no_stream = no_stream();
+    let status = Status::default();
+    let status_cp = status.clone();
+    let finished = Coroutine::with_defaults(core.handle(), move |await| {
+        status_cp.0.set(true);
+        for _ in await.stream(no_stream) {
+            // It'll not get here
+            status_cp.1.set(true);
+        }
+        // And it'll not get here
+        status_cp.1.set(true);
+    });
+    status.before_drop();
+    drop(core);
+    status.after_drop(true);
+    finished.wait().unwrap_err();
 }

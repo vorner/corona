@@ -121,7 +121,7 @@ mod switch;
 pub use errors::{Dropped, TaskFailed};
 
 use errors::TaskResult;
-use results::{CoroutineResult, GeneratorResult, StreamIterator};
+use results::{CoroutineResult, GeneratorResult, StreamCleanupIterator, StreamIterator};
 use switch::Switch;
 
 /// An asynchronous context.
@@ -303,6 +303,22 @@ impl<'a> Await<'a> {
     {
         StreamIterator::new(self, stream)
     }
+    /// Blocks the current coroutine to get each element of the stream.
+    ///
+    /// This is the same as the [`stream`](#method.stream) method, but it doesn't panic when the
+    /// core is dropped and the coroutine's stack needs to be cleaned up. Instead it returns
+    /// `Err(Dropped)` and leaves the cleanup to the caller.
+    ///
+    /// The advantage is this works even in case the reactor core is dropped during a panic. See
+    /// [`Coroutine::leak_on_panic`](struct.Coroutine.html#method.leak_on_panic) for more details.
+    pub fn stream_cleanup<I, E, S>(&self, stream: S) -> StreamCleanupIterator<I, E, S>
+        where
+            S: Stream<Item = I, Error = E> + 'static,
+            I: 'static,
+            E: 'static,
+    {
+        StreamCleanupIterator::new(self, stream)
+    }
     /// Switches to another coroutine.
     ///
     /// This allows another coroutine to run. However, if there's no other coroutine ready to run,
@@ -316,6 +332,14 @@ impl<'a> Await<'a> {
     pub fn yield_now(&self) {
         let fut = future::ok::<_, ()>(());
         self.future(fut).unwrap();
+    }
+    /// Switches to another coroutine.
+    ///
+    /// This is the same as [`yield_now`](#method.yield_now), but instead of panicking when the
+    /// reactor core is dropped, it returns `Err(Dropped)`.
+    pub fn yield_now_cleanup(&self) -> Result<(), Dropped> {
+        let fut = future::ok::<_, ()>(());
+        self.future_cleanup(fut).map(|_| ())
     }
 }
 

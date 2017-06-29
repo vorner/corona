@@ -1,5 +1,3 @@
-* Unclean shutdowns
-  - Cleanup iterators and generators
 * documentation, etc
 * Examples
 * External tests

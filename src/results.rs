@@ -4,7 +4,7 @@ use futures::{Async, Future, Poll, Stream};
 use futures::unsync::oneshot::Receiver;
 use futures::unsync::mpsc::Receiver as ChannelReceiver;
 
-use errors::{TaskFailed, TaskResult};
+use errors::{Dropped, TaskFailed, TaskResult};
 use super::Await;
 
 /// A wrapper to asynchronously iterate through a stream.
@@ -62,7 +62,7 @@ impl<'a, I, E, S> StreamIterator<'a, I, E, S>
         E: 'static,
 {
     pub(crate) fn new(await: &'a Await, stream: S) -> Self {
-        StreamIterator {
+        Self {
             await,
             stream: Some(stream),
         }
@@ -83,6 +83,61 @@ impl<'a, I, E, S> Iterator for StreamIterator<'a, I, E, S>
             Ok((None, stream)) => (None, stream),
             Ok((Some(ok), stream)) => (Some(Ok(ok)), stream),
             Err((e, stream)) => (Some(Err(e)), stream),
+        };
+        self.stream = Some(stream);
+        result
+    }
+}
+
+/// A wrapper to asynchronously iterate through a stream, handling coroutine cleanup.
+///
+/// This is like [`StreamIterator`](struct.StreamIterator.html), but it doesn't panic when the
+/// coroutine needs to be cleaned up. Instead, it returns `Err(Dropped)` in such case and leaves
+/// the stack cleanup to the caller.
+///
+/// See [`Await::stream_cleanup`](../struct.Await.html#method.stream_cleanup).
+pub struct StreamCleanupIterator<'a, I, E, S>
+    where
+        S: Stream<Item = I, Error = E> + 'static,
+        I: 'static,
+        E: 'static,
+{
+    await: &'a Await<'a>,
+    stream: Option<S>,
+}
+
+impl <'a, I, E, S> StreamCleanupIterator<'a, I, E, S>
+    where
+        S: Stream<Item = I, Error = E> + 'static,
+        I: 'static,
+        E: 'static,
+{
+    pub(crate) fn new(await: &'a Await, stream: S) -> Self {
+        Self {
+            await,
+            stream: Some(stream),
+        }
+    }
+}
+
+impl<'a, I, E, S> Iterator for StreamCleanupIterator<'a, I, E, S>
+    where
+        S: Stream<Item = I, Error = E> + 'static,
+        I: 'static,
+        E: 'static,
+{
+    type Item = Result<Result<I, E>, Dropped>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let fut = match self.stream.take() {
+            Some(s) => s.into_future(),
+            None => return Some(Err(Dropped)),
+        };
+        let resolved = self.await.future_cleanup(fut);
+        let (result, stream) = match resolved {
+            Ok(Ok((None, stream))) => (None, stream),
+            Ok(Ok((Some(ok), stream))) => (Some(Ok(Ok(ok))), stream),
+            Ok(Err((e, stream))) => (Some(Ok(Err(e))), stream),
+            Err(Dropped) => return Some(Err(Dropped)),
         };
         self.stream = Some(stream);
         result
