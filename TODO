@@ -1,7 +1,6 @@
 * documentation, etc
 * Examples
 * External tests
-* Pass the instructions through the usize (ugly, but probably better than the TLS).
 * Think about some thread support ‒ do we want some? How would it integrate in the API?
 * Look at the unwind safety and unwinding in general.
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.

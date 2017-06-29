@@ -1,7 +1,5 @@
 //! Module for the low-level switching of coroutines
 
-use std::cell::RefCell;
-
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Future, Poll};
@@ -59,9 +57,9 @@ impl Drop for Wakeup {
 ///
 /// This holds the extracted logic, so once we leave the coroutine, all locals that may possibly
 /// have any kind of destructor are gone.
-fn coroutine_internal(transfer: Transfer) -> Context {
+fn coroutine_internal(transfer: Transfer) -> (Switch, Context) {
     let mut context = transfer.context;
-    let switch = Switch::get();
+    let switch = Switch::extract(transfer.data);
     let result = match switch {
         Switch::StartTask { stack, mut task } => {
             let (ctx, stack) = task.perform(context, stack);
@@ -70,8 +68,7 @@ fn coroutine_internal(transfer: Transfer) -> Context {
         },
         _ => panic!("Invalid switch instruction on coroutine entry"),
     };
-    result.put();
-    context
+    (result, context)
 }
 
 /// Wrapper for the execution of a coroutine.
@@ -81,12 +78,11 @@ fn coroutine_internal(transfer: Transfer) -> Context {
 /// `context` crate, so we don't have anything with destructor here. The problem is, this function
 /// never finishes and therefore such destructors wouldn't be run.
 extern "C" fn coroutine(transfer: Transfer) -> ! {
-    let context = coroutine_internal(transfer);
-    unsafe { context.resume(0) };
+    let (result, context) = coroutine_internal(transfer);
+    result.exchange(context);
     unreachable!("Woken up after termination!");
 }
 
-// TODO: We could actually pass this through the data field of the transfer
 /// An instruction carried across the coroutine boundary.
 ///
 /// This describes what the receiving coroutine should do next (and contains parameters for that).
@@ -115,33 +111,41 @@ pub enum Switch {
     },
 }
 
-thread_local! {
-    static SWITCH: RefCell<Option<Switch>> = RefCell::new(None);
-}
-
 impl Switch {
-    /// Stores the switch instruction in a thread-local variable, so it can be taken out in another
-    /// coroutine.
-    fn put(self) {
-        SWITCH.with(|s| {
-            let mut s = s.borrow_mut();
-            assert!(s.is_none(), "Leftover switch instruction");
-            *s = Some(self);
-        });
-    }
-    /// Extracts the instruction stored in a thread-local variable.
-    fn get() -> Self {
-        SWITCH.with(|s| s.borrow_mut().take().expect("Missing switch instruction"))
+    /// Extracts the instruction passed through the coroutine transfer data.
+    fn extract(transfer_data: usize) -> Switch {
+        let ptr = transfer_data as *mut Option<Self>;
+        let optref = unsafe { ptr.as_mut() }.expect("NULL pointer passed through a coroutine switch");
+        optref.take().expect("Switch instruction already extracted")
     }
     /// Switches to a coroutine and back.
     ///
     /// Switches to the given context (coroutine) and sends it the current instruction. Returns the
     /// context that resumed us (after we are resumed) and provides the instruction it send us.
+    ///
+    /// # Internals
+    ///
+    /// There are two stacks in the play, the current one and one we want to transition into
+    /// (described by the passed `context`). We also pass a `Switch` *instruction* along the
+    /// transition.
+    ///
+    /// To pass the instruction, we abuse the usize `data` field in the underlying library for
+    /// switching stacks (also called `context`). To do that, we place the instruction into a
+    /// `Option<Switch>` on the current stack. We pass a pointer to that `Option` through that
+    /// `usize`. The receiving coroutine takes the instruction out of the `Option`, stealing it
+    /// from the originating stack. The originating stack doesn't change until we pass back here.
+    ///
+    /// Some future exchange from that (or possibly other) stack into this will do the reverse ‒
+    /// activate this stack and it'll extract the instruction from that stack.
+    ///
+    /// As the exchange leaves just an empty `Option` behind, destroying the stack (once it asks
+    /// for so through the instruction) is safe, we don't need to run any destructor on that.
     pub fn exchange(self, context: Context) -> (Self, Context) {
-        self.put();
-        let transfer = unsafe { context.resume(0) };
-        let switch = Self::get();
-        (switch, transfer.context)
+        let mut sw = Some(self);
+        let swp: *mut Option<Self> = &mut sw;
+        // TODO: Describe what we do here with the pointers
+        let transfer = unsafe { context.resume(swp as usize) };
+        (Self::extract(transfer.data), transfer.context)
     }
     /// Runs a child coroutine (one that does the work, is not a control coroutine) and once it
     /// returns, handles its return instruction.
