@@ -1,6 +1,6 @@
 [package]
 name = "corona"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 description = "Coroutine and Async/Await support for tokio-based futures"
 documentation = "https://docs.rs/corona"
