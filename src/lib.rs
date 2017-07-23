@@ -12,6 +12,9 @@
 //! representing its completion. Therefore, other coroutines can wait for it, or it can be used in
 //! the usual functional way and compose it with other futures.
 //!
+//! Unlike the coroutines planned for core Rust, these coroutines are stack-full (eg. you can
+//! suspend them from within deep stack frame) and they are available now.
+//!
 //! # The cost
 //!
 //! The coroutines are *not* zero cost, at least not now. There are these costs:
@@ -36,6 +39,8 @@
 //! It is obviously possible, but the ergonomics is something that needs some work. Therefore,
 //! expect the API to change, possibly in large ways.
 //!
+//! Still, if you want to test it, it should probably work and might be useful.
+//!
 //! # Known problems
 //!
 //! These are the problems I'm aware of and which I want to find a solution some day.
@@ -46,10 +51,11 @@
 //! * Many places have `'static` bounds on the types, even though these shouldn't be needed in
 //!   theory.
 //! * The relation with unwind safety is unclear.
-//! * No support for threads.
+//! * No support for threads (probably not even possible ‒ Rust's type system doesn't expect a
+//!   stack to move from one thread to another).
 //! * It relies on the tokio. It would be great if it worked with other future executors as well.
-//! * When the reactor core is dropped with some coroutines yet unfinished, their stacks and
-//!   everything on them leak.
+//! * Cleaning up of stacks (and things on them) when the coroutines didn't finish yet is done
+//!   through panicking. This has some ugly side effects.
 //!
 //! # Contribution
 //!

@@ -1,7 +1,4 @@
-* documentation, etc
-* Examples
-* External tests
-* Think about some thread support ‒ do we want some? How would it integrate in the API?
+* More examples
 * Look at the unwind safety and unwinding in general.
 * Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
 * Something like select
