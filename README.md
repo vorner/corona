@@ -2,12 +2,13 @@
 
 This is an experiment aiming to integrate coroutines with futures in Rust. It
 works, but is still considered very experimental and the API will likely
-change. Also, there are several yet unsolved problems.
+change (it is experimental API-wise, it doesn't crash or eat your data). Also,
+there are several yet unsolved problems.
 
 You want to read the [docs](https://docs.rs/corona).
 
-When you try it out, I'm interested in hearing some feedback (if it works, if the
-API could be improved somehow).
+When you try it out, I'm interested in hearing some feedback (if it works for
+you, if the API could be improved somehow).
 
 ## License
 
