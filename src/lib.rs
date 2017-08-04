@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/corona/0.2.0/corona/")]
+#![doc(html_root_url = "https://docs.rs/corona/0.2.1/corona/")]
 
 //! A library combining futures and coroutines.
 //!
@@ -41,7 +41,8 @@
 //! It is obviously possible, but the ergonomics is something that needs some work. Therefore,
 //! expect the API to change, possibly in large ways.
 //!
-//! Still, if you want to test it, it should probably work and might be useful.
+//! Still, if you want to test it, it should probably work and might be useful. It is experimental
+//! in a sense the API is not stabilized, but it is not expected to eat data or crash.
 //!
 //! # Known problems
 //!
