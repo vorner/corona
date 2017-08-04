@@ -1,3 +1,5 @@
+#![doc(html_root_url = "https://docs.rs/corona/0.2.0/corona/")]
+
 //! A library combining futures and coroutines.
 //!
 //! The current aim of Rust in regards to asynchronous programming is on

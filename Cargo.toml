@@ -1,5 +1,6 @@
 [package]
 name = "corona"
+# Also increase the version in src/lib html root attribute
 version = "0.2.0"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 description = "Coroutine and Async/Await support for tokio-based futures"
