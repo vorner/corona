@@ -115,6 +115,13 @@ impl Switch {
     /// Extracts the instruction passed through the coroutine transfer data.
     fn extract(transfer_data: usize) -> Switch {
         let ptr = transfer_data as *mut Option<Self>;
+        // The extract is called only in two cases. When switching into a newly born coroutine and
+        // during the exchange of two coroutines. In both cases, the caller is in this module, it
+        // places data onto its stack and passes the pointer as the usize parameter (which is
+        // safe). The stack is still alive at the time we are called and it hasn't moved (since our
+        // stack got the control), so the pointer is not dangling. We just extract the data from
+        // there right away and leave None on the stack, which doesn't need any special handling
+        // during destruction, etc.
         let optref = unsafe { ptr.as_mut() }.expect("NULL pointer passed through a coroutine switch");
         optref.take().expect("Switch instruction already extracted")
     }
@@ -143,7 +150,14 @@ impl Switch {
     pub fn exchange(self, context: Context) -> (Self, Context) {
         let mut sw = Some(self);
         let swp: *mut Option<Self> = &mut sw;
-        // TODO: Describe what we do here with the pointers
+        // We store the switch instruction onto the current stack and pass a pointer for it to the
+        // other coroutine. It will get extracted just as the first thing the other coroutine does,
+        // therefore at the time this stack frame is still active.
+        //
+        // Also, switching to the other coroutine is OK, because each coroutine owns its own stack
+        // (it has it passed to it and it keeps it on its own stack until it decides to terminate
+        // and passes it back through the instruction on switching out). So the stack can't get
+        // destroyed prematurely.
         let transfer = unsafe { context.resume(swp as usize) };
         (Self::extract(transfer.data), transfer.context)
     }
@@ -171,6 +185,9 @@ impl Switch {
     pub fn run_new_coroutine(stack_size: usize, task: BoxedTask) {
         let stack = stack_cache::get(stack_size);
         assert_eq!(stack.len(), stack_size);
+        // The `Context::new` is unsafe only because we have to promise not to delete the stack
+        // prematurely, while the coroutine is still alive. We ensure that by giving the ownership
+        // of the stack to the coroutine and it gives it up only once it is ready to terminate.
         let context = unsafe { Context::new(&stack, coroutine) };
         Switch::StartTask { stack, task }.run_child(context);
     }
