@@ -58,6 +58,34 @@
 //! * It relies on the tokio. It would be great if it worked with other future executors as well.
 //! * Cleaning up of stacks (and things on them) when the coroutines didn't finish yet is done
 //!   through panicking. This has some ugly side effects.
+//! * It is possible to create a deadlock when moving the driving tokio core inside a coroutine,
+//!   like this (eg. this is an example what *not* to do):
+//!
+//! ```rust,no_run
+//! # extern crate corona;
+//! # extern crate futures;
+//! # extern crate tokio_core;
+//! # use std::time::Duration;
+//! # use corona::Coroutine;
+//! # use futures::Future;
+//! # use futures::unsync::oneshot;
+//! # use tokio_core::reactor::{Core, Timeout};
+//! #
+//! # fn main() {
+//! let mut core = Core::new().unwrap();
+//! let (sender, receiver) = oneshot::channel();
+//! let handle = core.handle();
+//! let c = Coroutine::with_defaults(handle.clone(), move |_await| {
+//!     core.run(receiver).unwrap();
+//! });
+//! Coroutine::with_defaults(handle, |await| {
+//!     let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
+//!     await.future(timeout).unwrap();
+//!     drop(sender.send(42));
+//! });
+//! c.wait().unwrap();
+//! # }
+//! ```
 //!
 //! # Contribution
 //!

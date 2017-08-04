@@ -4,7 +4,6 @@
 * Something like select
 * Wait for future with timeout?
 * Build fails on half of appveyor ‒ seems like some issue with compiler, look if it can be made work
-* Document the way to deadlock
 * Can we rely on *any* future executor?
 * Generators might want to run only when next is called on them
   - How will their clean up work?
