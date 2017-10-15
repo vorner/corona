@@ -1,3 +1,4 @@
+/* XXX
 extern crate corona;
 extern crate futures;
 extern crate tokio_core;
@@ -214,3 +215,4 @@ fn stream_panic() {
     status.after_drop(true);
     finished.wait().unwrap_err();
 }
+*/

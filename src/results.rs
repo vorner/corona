@@ -4,6 +4,7 @@ use futures::{Async, Future, Poll, Stream};
 use futures::unsync::oneshot::Receiver;
 use futures::unsync::mpsc::Receiver as ChannelReceiver;
 
+/*
 use errors::{Dropped, TaskFailed, TaskResult};
 use super::Await;
 
@@ -144,30 +145,6 @@ impl<'a, I, E, S> Iterator for StreamCleanupIterator<'a, I, E, S>
     }
 }
 
-/// A `Future` representing a completion of a coroutine.
-pub struct CoroutineResult<R> {
-    receiver: Receiver<TaskResult<R>>,
-}
-
-impl<R> CoroutineResult<R> {
-    pub(crate) fn new(receiver: Receiver<TaskResult<R>>) -> Self {
-        Self { receiver }
-    }
-}
-
-impl<R> Future for CoroutineResult<R> {
-    type Item = R;
-    type Error = TaskFailed;
-    fn poll(&mut self) -> Poll<R, TaskFailed> {
-        match self.receiver.poll() {
-            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
-            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(_) => Err(TaskFailed::Lost),
-        }
-    }
-}
-
 /// A `Stream` representing the produced items from a generator.
 ///
 /// The stream will produce the items and then terminate when the generator coroutine terminates.
@@ -195,3 +172,4 @@ impl<Item> Stream for GeneratorResult<Item> {
         }
     }
 }
+*/

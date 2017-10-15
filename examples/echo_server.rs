@@ -1,3 +1,4 @@
+/*
 //! A show-case of an echo server using coroutines.
 //!
 //! It listens on port 1234 and sends each line back. It handles multiple clients concurrently.
@@ -56,3 +57,5 @@ fn main() {
     // Propagate all panics from the coroutine to the main thread with the unwrap
     core.run(acceptor).unwrap();
 }
+*/
+fn main() {}

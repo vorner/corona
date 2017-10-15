@@ -135,31 +135,193 @@ extern crate context;
 extern crate futures;
 extern crate tokio_core;
 
+mod stack_cache;
+mod switch;
+
 use std::any::Any;
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::panic::{self, AssertUnwindSafe};
+
+use context::stack::{Stack, ProtectedFixedSizeStack};
+use futures::{Async, Future, Poll};
+use futures::unsync::oneshot::{self, Receiver};
+use tokio_core::reactor::Handle;
+
+use switch::Switch;
+
+pub enum TaskResult<R> {
+    Panicked(Box<Any + Send + 'static>),
+    Finished(R),
+}
+
+/// The task (coroutine) has failed.
+///
+/// This is used as an error type and represents an unsuccessfull coroutine.
+#[derive(Debug)]
+pub enum TaskFailed {
+    /// There was a panic inside the coroutine.
+    Panicked(Box<Any + Send + 'static>),
+    /// The coroutine was lost.
+    ///
+    /// This can happen in case the `tokio_core::reactor::Core` the coroutine was spawned onto was
+    /// dropped before the coroutine completed.
+    Lost,
+}
+
+impl Error for TaskFailed {
+    fn description(&self) -> &str {
+        match *self {
+            TaskFailed::Panicked(_) => "The coroutine panicked",
+            TaskFailed::Lost => "The coroutine was lost",
+        }
+    }
+}
+
+impl Display for TaskFailed {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+/// A `Future` representing a completion of a coroutine.
+pub struct CoroutineResult<R> {
+    receiver: Receiver<TaskResult<R>>,
+}
+
+impl<R> Future for CoroutineResult<R> {
+    type Item = R;
+    type Error = TaskFailed;
+    fn poll(&mut self) -> Poll<R, TaskFailed> {
+        match self.receiver.poll() {
+            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
+            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(_) => Err(TaskFailed::Lost),
+        }
+    }
+}
+
+/// A builder of coroutines.
+///
+/// This struct is the main entry point and a way to start coroutines of various kinds. It allows
+/// both starting them with default parameters and configuring them with the builder pattern.
+#[derive(Clone)]
+pub struct Coroutine {
+    handle: Handle,
+    stack_size: usize,
+    leak_on_panic: bool,
+}
+
+impl Coroutine {
+    /// Starts building a coroutine.
+    ///
+    /// This constructor produces a new builder for coroutines. The builder can then be used to
+    /// specify configuration of the coroutines.
+    ///
+    /// It is possible to spawn multiple coroutines from the same builder.
+    ///
+    /// # Parameters
+    ///
+    /// * `handle`: The coroutines need a reactor core to run on and schedule their control
+    ///   switches. This is the handle to the reactor core to be used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let core = Core::new().unwrap();
+    /// let builder = Coroutine::new(core.handle());
+    ///
+    /// let coroutine = builder.spawn(|| { });
+    /// # }
+    ///
+    /// ```
+    pub fn new(handle: Handle) -> Self {
+        Coroutine {
+            handle,
+            stack_size: Stack::default_size(),
+            leak_on_panic: false,
+        }
+    }
+    /// Spawns a coroutine directly.
+    ///
+    /// This constructor spawns a coroutine with default parameters without the inconvenience of
+    /// handling a builder. It is equivalent to spawning it with an unconfigured builder.
+    ///
+    /// Unlike the [`spawn`](#method.spawn.html), this one can't fail, since the default parameters
+    /// of the builder are expected to always work (if they don't, file a bug).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate corona;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let core = Core::new().unwrap();
+    ///
+    /// let coroutine = Coroutine::with_defaults(core.handle(), || { });
+    /// # }
+    ///
+    /// ```
+    pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + 'static,
+    {
+        Coroutine::new(handle).spawn(task)
+    }
+    pub fn spawn<R, Task>(&self, task: Task) -> CoroutineResult<R>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+
+        let perform = move |context, stack| {
+            let result = match panic::catch_unwind(AssertUnwindSafe(|| task())) {
+                Ok(res) => TaskResult::Finished(res),
+                Err(panic) => TaskResult::Panicked(panic),
+            };
+            // We are not interested in errors. They just mean the receiver is no longer
+            // interested, which is fine by us.
+            drop(sender.send(result));
+            (context, stack)
+        };
+        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
+
+        CoroutineResult { receiver }
+    }
+}
+
+/*
+
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
-use std::panic::{self, AssertUnwindSafe};
 use std::thread;
 
 use context::Context;
-use context::stack::{Stack, ProtectedFixedSizeStack};
 use futures::{Future, Sink, Stream};
 use futures::future;
-use futures::unsync::oneshot;
 use futures::unsync::mpsc::{self, Sender as ChannelSender};
 use tokio_core::reactor::Handle;
 
 pub mod results;
 
 mod errors;
-mod stack_cache;
-mod switch;
 
 pub use errors::{Dropped, TaskFailed};
 
 use errors::TaskResult;
 use results::{CoroutineResult, GeneratorResult, StreamCleanupIterator, StreamIterator};
-use switch::Switch;
 
 /// An asynchronous context.
 ///
@@ -448,89 +610,11 @@ pub struct Coroutine {
 }
 
 impl Coroutine {
-    /// Starts building a coroutine.
-    ///
-    /// This constructor produces a new builder for coroutines. The builder can then be used to
-    /// specify configuration of the coroutines.
-    ///
-    /// It is possible to spawn multiple coroutines from the same builder.
-    ///
-    /// # Parameters
-    ///
-    /// * `handle`: The coroutines need a reactor core to run on and schedule their control
-    ///   switches. This is the handle to the reactor core to be used.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # extern crate corona;
-    /// # extern crate futures;
-    /// # extern crate tokio_core;
-    /// use corona::Coroutine;
-    /// use futures::stream;
-    /// use tokio_core::reactor::Core;
-    ///
-    /// # fn main() {
-    /// let core = Core::new().unwrap();
-    /// let builder = Coroutine::new(core.handle());
-    ///
-    /// let coroutine = builder.spawn(|await| { });
-    /// # }
-    ///
-    /// ```
-    pub fn new(handle: Handle) -> Self {
-        Coroutine {
-            handle,
-            stack_size: Stack::default_size(),
-            leak_on_panic: false,
-        }
-    }
-    /// Spawns a coroutine directly.
-    ///
-    /// This constructor spawns a coroutine with default parameters without the inconvenience of
-    /// handling a builder. It is equivalent to spawning it with an unconfigured builder.
-    ///
-    /// Unlike the [`spawn`](#method.spawn.html), this one can't fail, since the default parameters
-    /// of the builder are expected to always work (if they don't, file a bug).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # extern crate corona;
-    /// # extern crate futures;
-    /// # extern crate tokio_core;
-    /// use corona::Coroutine;
-    /// use futures::stream;
-    /// use tokio_core::reactor::Core;
-    ///
-    /// # fn main() {
-    /// let core = Core::new().unwrap();
-    ///
-    /// let coroutine = Coroutine::with_defaults(core.handle(), |await| { });
-    /// # }
-    ///
-    /// ```
-    pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
-        where
-            R: 'static,
-            Task: FnOnce(&Await) -> R + 'static,
-    {
-        Coroutine::new(handle).spawn(task)
-    }
     fn spawn_inner<Task>(&self, task: Task)
         where
             Task: FnOnce(Handle, RefCell<Option<Context>>, RefCell<Option<ProtectedFixedSizeStack>>)
                 -> (RefCell<Option<Context>>, RefCell<Option<ProtectedFixedSizeStack>>) + 'static
     {
-        let handle = self.handle.clone();
-
-        let perform = move |context, stack| {
-            let context = RefCell::new(Some(context));
-            let stack = RefCell::new(Some(stack));
-            let (context, stack) = task(handle, context, stack);
-            (context.into_inner().unwrap(), stack.into_inner().unwrap())
-        };
-        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
     }
     /// Spawns a coroutine.
     ///
@@ -821,4 +905,46 @@ mod tests {
         c.wait().unwrap();
     }
     */
+}
+*/
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::rc::Rc;
+
+    use tokio_core::reactor::{Core, Interval, Timeout};
+
+    use super::*;
+
+    /// Test spawning and execution of tasks.
+    #[test]
+    fn spawn_some() {
+        let mut core = Core::new().unwrap();
+        let s1 = Rc::new(AtomicBool::new(false));
+        let s2 = Rc::new(AtomicBool::new(false));
+        let s1c = s1.clone();
+        let s2c = s2.clone();
+        let handle = core.handle();
+
+        let mut builder = Coroutine::new(handle);
+        // builder.stack_size(40960); XXX
+        let builder_inner = builder.clone();
+
+        let result = builder.spawn(move || {
+            let result = builder_inner.spawn(move || {
+                s2c.store(true, Ordering::Relaxed);
+                42
+            });
+            s1c.store(true, Ordering::Relaxed);
+            result
+        });
+
+        // Both coroutines run to finish
+        assert!(s1.load(Ordering::Relaxed), "The outer closure didn't run");
+        assert!(s2.load(Ordering::Relaxed), "The inner closure didn't run");
+        // The result gets propagated through.
+        let extract = result.and_then(|r| r);
+        assert_eq!(42, core.run(extract).unwrap());
+    }
 }
