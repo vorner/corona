@@ -51,7 +51,7 @@ pub struct StreamIterator<'a, I, E, S>
         I: 'static,
         E: 'static,
 {
-    await: &'a Await<'a>,
+    await: &'a Await,
     stream: Option<S>,
 }
 
@@ -102,7 +102,7 @@ pub struct StreamCleanupIterator<'a, I, E, S>
         I: 'static,
         E: 'static,
 {
-    await: &'a Await<'a>,
+    await: &'a Await,
     stream: Option<S>,
 }
 
