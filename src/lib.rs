@@ -131,13 +131,19 @@
 //! Further examples can be found in the
 //! [repository](https://github.com/vorner/corona/tree/master/examples).
 
+// XXX Finish cleanups
+// XXX Add docs
+// XXX Switch submodules to pub(crate) where possible/appropriate
+// XXX Move the Coroutine to a submodule and provide this as a facade
+
 extern crate context;
 extern crate futures;
 extern crate tokio_core;
 
+pub mod errors;
 pub mod prelude;
+pub mod wrappers;
 
-mod errors;
 mod stack_cache;
 mod switch;
 
