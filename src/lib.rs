@@ -135,9 +135,11 @@ extern crate context;
 extern crate futures;
 extern crate tokio_core;
 
+pub mod prelude;
+
+mod errors;
 mod stack_cache;
 mod switch;
-mod errors;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -309,7 +311,9 @@ impl Coroutine {
             drop(sender.send(r));
             Ok(())
         });
-        let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
+        let my_context = CONTEXTS.with(|c| {
+            c.borrow_mut().pop().expect("Can't wait outside of a coroutine")
+        });
         let instruction = Switch::ScheduleWakeup {
             after: Box::new(task),
             handle: my_context.handle.clone(),
@@ -915,6 +919,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
+    use futures::future;
     use tokio_core::reactor::{Core, Timeout};
 
     use super::*;
@@ -980,4 +985,13 @@ mod tests {
         let handle = core.handle();
         assert_eq!(42, core.run(Coroutine::with_defaults(handle, || 42)).unwrap());
     }
+
+    /// It's impossible to wait on a future outside of a coroutine
+    #[test]
+    #[should_panic]
+    fn panic_without_coroutine() {
+        Coroutine::wait(future::ok::<_, ()>(42));
+    }
+
+    // XXX Tests with dropping stuff
 }
