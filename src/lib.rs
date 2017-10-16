@@ -137,51 +137,25 @@ extern crate tokio_core;
 
 mod stack_cache;
 mod switch;
+mod errors;
 
 use std::any::Any;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
 
+use context::Context;
 use context::stack::{Stack, ProtectedFixedSizeStack};
 use futures::{Async, Future, Poll};
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
+
+pub use errors::{Dropped, TaskFailed};
 
 use switch::Switch;
 
 pub enum TaskResult<R> {
     Panicked(Box<Any + Send + 'static>),
     Finished(R),
-}
-
-/// The task (coroutine) has failed.
-///
-/// This is used as an error type and represents an unsuccessfull coroutine.
-#[derive(Debug)]
-pub enum TaskFailed {
-    /// There was a panic inside the coroutine.
-    Panicked(Box<Any + Send + 'static>),
-    /// The coroutine was lost.
-    ///
-    /// This can happen in case the `tokio_core::reactor::Core` the coroutine was spawned onto was
-    /// dropped before the coroutine completed.
-    Lost,
-}
-
-impl Error for TaskFailed {
-    fn description(&self) -> &str {
-        match *self {
-            TaskFailed::Panicked(_) => "The coroutine panicked",
-            TaskFailed::Lost => "The coroutine was lost",
-        }
-    }
-}
-
-impl Display for TaskFailed {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.description())
-    }
 }
 
 /// A `Future` representing a completion of a coroutine.
@@ -200,6 +174,19 @@ impl<R> Future for CoroutineResult<R> {
             Err(_) => Err(TaskFailed::Lost),
         }
     }
+}
+
+struct CoroutineContext {
+    /// Use this to spawn waiting coroutines
+    handle: Handle,
+    /// The context that called us and we'll switch back to it when we wait for something.
+    parent_context: Context,
+    /// Our own stack. We keep ourselvel alive.
+    stack: ProtectedFixedSizeStack,
+}
+
+thread_local! {
+    static CONTEXTS: RefCell<Vec<CoroutineContext>> = RefCell::new(Vec::new());
 }
 
 /// A builder of coroutines.
@@ -286,7 +273,15 @@ impl Coroutine {
     {
         let (sender, receiver) = oneshot::channel();
 
+        let handle = self.handle.clone();
+
         let perform = move |context, stack| {
+            let my_context = CoroutineContext {
+                handle,
+                parent_context: context,
+                stack,
+            };
+            CONTEXTS.with(|c| c.borrow_mut().push(my_context));
             let result = match panic::catch_unwind(AssertUnwindSafe(|| task())) {
                 Ok(res) => TaskResult::Finished(res),
                 Err(panic) => TaskResult::Panicked(panic),
@@ -294,11 +289,47 @@ impl Coroutine {
             // We are not interested in errors. They just mean the receiver is no longer
             // interested, which is fine by us.
             drop(sender.send(result));
-            (context, stack)
+            let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
+            (my_context.parent_context, my_context.stack)
         };
         Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
 
         CoroutineResult { receiver }
+    }
+
+    pub fn wait<I, E, Fut>(fut: Fut) -> Result<Result<I, E>, Dropped>
+    where
+        I: 'static,
+        E: 'static,
+        Fut: Future<Item = I, Error = E> + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        let task = fut.then(move |r| {
+            // Errors are uninteresting. That just means nobody is listening for the answer.
+            drop(sender.send(r));
+            Ok(())
+        });
+        let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
+        let instruction = Switch::ScheduleWakeup {
+            after: Box::new(task),
+            handle: my_context.handle.clone(),
+        };
+        let (reply_instruction, context) = instruction.exchange(my_context.parent_context);
+        let new_context = CoroutineContext {
+            parent_context: context,
+            stack: my_context.stack,
+            handle: my_context.handle,
+        };
+        CONTEXTS.with(|c| c.borrow_mut().push(new_context));
+        match reply_instruction {
+            Switch::Resume => (),
+            Switch::Cleanup => return Err(Dropped),
+            _ => unreachable!("Invalid instruction on wakeup"),
+        }
+        // It is safe to .wait() here, because we are resumed and we get resumed only after the
+        // future finished.
+        // TODO: Dropping futures?
+        Ok(receiver.wait().expect("A future should never get dropped"))
     }
 }
 
@@ -782,36 +813,6 @@ mod tests {
         assert_eq!(42, core.run(extract).unwrap());
     }
 
-    /// The panic doesn't kill the main thread, but is reported.
-    #[test]
-    fn panics() {
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
-        match core.run(Coroutine::with_defaults(handle, |_| panic!("Test"))) {
-            Err(TaskFailed::Panicked(_)) => (),
-            _ => panic!("Panic not reported properly"),
-        }
-        let handle = core.handle();
-        assert_eq!(42, core.run(Coroutine::with_defaults(handle, |_| 42)).unwrap());
-    }
-
-    /// Wait for a future to complete.
-    #[test]
-    fn future_wait() {
-        let mut core = Core::new().unwrap();
-        let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::with_defaults(core.handle(), move |await| {
-            let msg = await.future(receiver).unwrap();
-            msg
-        });
-        Coroutine::with_defaults(core.handle(), move |await| {
-            let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
-            await.future(timeout).unwrap();
-            sender.send(42).unwrap();
-        });
-        assert_eq!(42, core.run(all_done).unwrap());
-    }
-
     /// Stream can be iterated asynchronously.
     #[test]
     fn stream_iter() {
@@ -912,8 +913,9 @@ mod tests {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::rc::Rc;
+    use std::time::Duration;
 
-    use tokio_core::reactor::{Core, Interval, Timeout};
+    use tokio_core::reactor::{Core, Timeout};
 
     use super::*;
 
@@ -946,5 +948,36 @@ mod tests {
         // The result gets propagated through.
         let extract = result.and_then(|r| r);
         assert_eq!(42, core.run(extract).unwrap());
+    }
+
+    /// Wait for a future to complete.
+    #[test]
+    fn future_wait() {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+        let (sender, receiver) = oneshot::channel();
+        let all_done = Coroutine::with_defaults(core.handle(), move || {
+            let msg = Coroutine::wait(receiver).unwrap().unwrap();
+            msg
+        });
+        Coroutine::with_defaults(core.handle(), move || {
+            let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+            Coroutine::wait(timeout).unwrap();
+            sender.send(42).unwrap();
+        });
+        assert_eq!(42, core.run(all_done).unwrap());
+    }
+
+    /// The panic doesn't kill the main thread, but is reported.
+    #[test]
+    fn panics() {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+        match core.run(Coroutine::with_defaults(handle, || panic!("Test"))) {
+            Err(TaskFailed::Panicked(_)) => (),
+            _ => panic!("Panic not reported properly"),
+        }
+        let handle = core.handle();
+        assert_eq!(42, core.run(Coroutine::with_defaults(handle, || 42)).unwrap());
     }
 }
