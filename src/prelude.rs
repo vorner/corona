@@ -4,7 +4,7 @@ use futures::{Future, Stream};
 use errors::Dropped;
 use wrappers::{CleanupIterator, OkIterator, ResultIterator};
 
-pub use super::Coroutine;
+pub use coroutine::Coroutine;
 
 pub trait CoroutineFuture: Sized {
     type Item;

@@ -165,7 +165,7 @@ impl Switch {
     /// returns, handles its return instruction.
     fn run_child(self, context: Context) {
         let (reply, context) = self.exchange(context);
-        use Switch::*;
+        use self::Switch::*;
         match reply {
             Destroy { stack } => {
                 drop(context);
