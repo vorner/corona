@@ -3,7 +3,8 @@ use futures::{Future, Stream};
 
 use errors::Dropped;
 use wrappers::{CleanupIterator, OkIterator, ResultIterator};
-use super::Coroutine;
+
+pub use super::Coroutine;
 
 pub trait CoroutineFuture: Sized {
     type Item;
@@ -51,3 +52,7 @@ where
         CleanupIterator::new(self)
     }
 }
+
+// Once we have non-static futures, we want...
+// TODO: Getting one element out of a stream
+// TODO: Pushing one element into a sink

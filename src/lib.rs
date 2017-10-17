@@ -15,7 +15,8 @@
 //! the usual functional way and compose it with other futures.
 //!
 //! Unlike the coroutines planned for core Rust, these coroutines are stack-full (eg. you can
-//! suspend them from within deep stack frame) and they are available now.
+//! suspend them from within deep stack frame) and they are available now. This has some
+//! advantages, but also costs.
 //!
 //! # The cost
 //!
@@ -57,6 +58,7 @@
 //! * No support for threads (probably not even possible ‒ Rust's type system doesn't expect a
 //!   stack to move from one thread to another).
 //! * It relies on the tokio. It would be great if it worked with other future executors as well.
+//!   This might change after the tokio refactoring.
 //! * Cleaning up of stacks (and things on them) when the coroutines didn't finish yet is done
 //!   through panicking. This has some ugly side effects.
 //! * It is possible to create a deadlock when moving the driving tokio core inside a coroutine,
@@ -104,24 +106,29 @@
 //! # extern crate futures;
 //! # extern crate tokio_core;
 //! use std::time::Duration;
-//! use corona::Coroutine;
-//! use futures::Future;
+//! use futures::Sink;
+//! use futures::unsync::mpsc;
+//! use corona::prelude::*;
+//!
 //! use tokio_core::reactor::{Core, Timeout};
 //!
 //! # fn main() {
 //! let mut core = Core::new().unwrap();
+//! let handle = core.handle();
 //! let builder = Coroutine::new(core.handle());
-//! let generator = builder.generator(|producer| {
-//!     producer.produce(1);
-//!     producer.produce(2);
+//! let (sender, receiver) = mpsc::channel(1);
+//! builder.spawn(|| {
+//!     let mut sender = sender;
+//!     sender = sender.send(1).coro_wait().unwrap();
+//!     sender = sender.send(2).coro_wait().unwrap();
 //! });
-//! let coroutine = builder.spawn(move |await| {
-//!     for item in await.stream(generator) {
-//!         println!("{}", item.unwrap());
+//! let coroutine = builder.spawn(move || {
+//!     for item in receiver.iter_ok() {
+//!         println!("{}", item);
 //!     }
 //!
-//!     let timeout = Timeout::new(Duration::from_millis(100), await.handle()).unwrap();
-//!     await.future(timeout).unwrap();
+//!     let timeout = Timeout::new(Duration::from_millis(100), &handle).unwrap();
+//!     timeout.coro_wait().unwrap();
 //!
 //!     42
 //! });
@@ -134,6 +141,7 @@
 
 // XXX Finish cleanups
 // XXX Add docs
+// XXX More examples and explanation how to use
 // XXX Switch submodules to pub(crate) where possible/appropriate
 // XXX Move the Coroutine to a submodule and provide this as a facade
 
@@ -941,7 +949,7 @@ mod tests {
         let s2c = s2.clone();
         let handle = core.handle();
 
-        let mut builder = Coroutine::new(handle);
+        let builder = Coroutine::new(handle);
         // builder.stack_size(40960); XXX
         let builder_inner = builder.clone();
 
@@ -997,6 +1005,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_without_coroutine() {
-        Coroutine::wait(future::ok::<_, ()>(42));
+        drop(Coroutine::wait(future::ok::<_, ()>(42)));
     }
 }
