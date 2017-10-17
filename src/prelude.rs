@@ -59,42 +59,43 @@ mod tests {
     use futures::{future, stream};
     use tokio_core::reactor::Core;
 
-    #[test]
-    fn coro_wait() {
-        let mut core = Core::new().unwrap();
-        let all_done = Coroutine::with_defaults(core.handle(), || {
-            future::ok::<_, ()>(42).coro_wait().unwrap() // 42
-        });
-        assert_eq!(42, core.run(all_done).unwrap());
+    /// Just a convenience macro to unify bunch of very similar tests
+    macro_rules! fourty_two {
+        ($($(#[$meta: meta])* fn $name: ident () $coro: block)*) => {
+            $(
+            $(#[$meta])*
+            #[test]
+            fn $name() {
+                let mut core = Core::new().unwrap();
+                let all_done = Coroutine::with_defaults(core.handle(), || $coro);
+                assert_eq!(42, core.run(all_done).unwrap());
+            }
+            )*
+        }
     }
 
-    #[test]
-    fn coro_iter() {
-        let mut core = Core::new().unwrap();
-        let all_done = Coroutine::with_defaults(core.handle(), || {
+    fourty_two! {
+        /// Wait for a future result.
+        fn coro_wait() {
+            future::ok::<_, ()>(42).coro_wait().unwrap()
+        }
+
+        /// Asynchronous iteration of successful items.
+        fn coro_iter() {
             stream::once::<_, ()>(Ok(42)).iter_ok().sum()
-        });
-        assert_eq!(42, core.run(all_done).unwrap());
-    }
+        }
 
-    #[test]
-    fn coro_iter_err() {
-        let mut core = Core::new().unwrap();
-        let all_done = Coroutine::with_defaults(core.handle(), || {
+        /// Asynchronous iteration of successful items stops at the first error.
+        fn coro_iter_err() {
             stream::iter(vec![Ok(42), Err(()), Ok(100)]).iter_ok().sum()
-        });
-        assert_eq!(42, core.run(all_done).unwrap());
-    }
+        }
 
-    #[test]
-    fn coro_iter_result() {
-        let mut core = Core::new().unwrap();
-        let all_done = Coroutine::with_defaults(core.handle(), || {
-            stream::iter(vec![Ok(42), Err(()), Ok(100)])
+        /// All results are passed on through the iterator.
+        fn coro_iter_result() {
+            stream::iter(vec![Ok(12), Err(()), Ok(30)])
                 .iter_result()
                 .filter_map(Result::ok)
                 .sum()
-        });
-        assert_eq!(142, core.run(all_done).unwrap());
+        }
     }
 }

@@ -973,7 +973,7 @@ mod tests {
         });
         Coroutine::with_defaults(core.handle(), move || {
             let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
-            Coroutine::wait(timeout).unwrap();
+            Coroutine::wait(timeout).unwrap().unwrap();
             sender.send(42).unwrap();
         });
         assert_eq!(42, core.run(all_done).unwrap());
