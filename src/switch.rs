@@ -2,8 +2,6 @@
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
-use futures::{Async, Future, Poll};
-use tokio_core::reactor::Handle;
 
 use stack_cache;
 
@@ -21,35 +19,14 @@ impl<F: FnOnce(Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSize
 /// A fake Box<FnOnce(Context) -> Context>.
 type BoxedTask = Box<BoxableTask>;
 
-/// A future that a coroutine waits on.
-type WakeupAfter = Box<Future<Item = (), Error = ()>>;
-
-struct Wakeup {
-    after: WakeupAfter,
-    context: Option<Context>,
+// XXX Docs
+pub trait RefCall {
+    fn perform(&mut self, Context);
 }
 
-impl Future for Wakeup {
-    type Item = ();
-    type Error = ();
-    fn poll(&mut self) -> Poll<(), ()> {
-        assert!(self.context.is_some());
-        match self.after.poll() {
-            Ok(Async::Ready(())) => {
-                Switch::Resume.run_child(self.context.take().unwrap());
-                Ok(Async::Ready(()))
-            }
-            other => other,
-        }
-    }
-}
-
-impl Drop for Wakeup {
-    fn drop(&mut self) {
-        if let Some(context) = self.context.take() {
-            // In case the future hasn't fired, ask the coroutine to clean up
-            Switch::Cleanup.run_child(context);
-        }
+impl<F: FnOnce(Context)> RefCall for Option<F> {
+    fn perform(&mut self, context: Context) {
+        self.take().unwrap()(context)
     }
 }
 
@@ -96,10 +73,8 @@ pub enum Switch {
         stack: ProtectedFixedSizeStack,
         task: BoxedTask,
     },
-    /// Please wake the sending coroutine once the `after` future resolves.
-    ScheduleWakeup {
-        after: WakeupAfter,
-        handle: Handle,
+    OutsideCall {
+        call: &'static mut RefCall,
     },
     /// Continue operation, the future is resolved.
     Resume,
@@ -147,7 +122,7 @@ impl Switch {
     ///
     /// As the exchange leaves just an empty `Option` behind, destroying the stack (once it asks
     /// for so through the instruction) is safe, we don't need to run any destructor on that.
-    pub fn exchange(self, context: Context) -> (Self, Context) {
+    pub(crate) fn exchange(self, context: Context) -> (Self, Context) {
         let mut sw = Some(self);
         let swp: *mut Option<Self> = &mut sw;
         // We store the switch instruction onto the current stack and pass a pointer for it to the
@@ -163,7 +138,7 @@ impl Switch {
     }
     /// Runs a child coroutine (one that does the work, is not a control coroutine) and once it
     /// returns, handles its return instruction.
-    fn run_child(self, context: Context) {
+    pub(crate) fn run_child(self, context: Context) {
         let (reply, context) = self.exchange(context);
         use self::Switch::*;
         match reply {
@@ -171,18 +146,14 @@ impl Switch {
                 drop(context);
                 stack_cache::put(stack);
             },
-            ScheduleWakeup { after, handle } => {
-                let wakeup = Wakeup {
-                    context: Some(context),
-                    after,
-                };
-                handle.spawn(wakeup);
+            OutsideCall { call } => {
+                call.perform(context);
             },
             _ => unreachable!("Invalid switch instruction when switching out"),
         }
     }
     /// Creates a new coroutine and runs it.
-    pub fn run_new_coroutine(stack_size: usize, task: BoxedTask) {
+    pub(crate) fn run_new_coroutine(stack_size: usize, task: BoxedTask) {
         let stack = stack_cache::get(stack_size);
         assert_eq!(stack.len(), stack_size);
         // The `Context::new` is unsafe only because we have to promise not to delete the stack

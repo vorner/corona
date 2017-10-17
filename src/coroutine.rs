@@ -161,18 +161,26 @@ impl Coroutine {
         E: 'static,
         Fut: Future<Item = I, Error = E> + 'static,
     {
-        let (sender, receiver) = oneshot::channel();
-        let task = fut.then(move |r| {
-            // Errors are uninteresting. That just means nobody is listening for the answer.
-            drop(sender.send(r));
-            Ok(())
-        });
         let my_context = CONTEXTS.with(|c| {
             c.borrow_mut().pop().expect("Can't wait outside of a coroutine")
         });
-        let instruction = Switch::ScheduleWakeup {
-            after: Box::new(task),
-            handle: my_context.handle.clone(),
+        let mut task_inner = TaskInner {
+            future: fut,
+            result: None,
+            context: None,
+        };
+        let task = Task {
+            inner: &mut task_inner,
+            finished: false,
+        };
+        let handle: *const Handle = &my_context.handle;
+        let mut create_task = Some(move |context| unsafe {
+            (*task.inner).context = Some(context);
+            (*handle).spawn(task);
+        });
+        let cheat: *mut _ = &mut create_task;
+        let instruction = Switch::OutsideCall {
+            call: unsafe { cheat.as_mut().unwrap() },
         };
         let (reply_instruction, context) = instruction.exchange(my_context.parent_context);
         let new_context = CoroutineContext {
@@ -186,10 +194,47 @@ impl Coroutine {
             Switch::Cleanup => return Err(Dropped),
             _ => unreachable!("Invalid instruction on wakeup"),
         }
-        // It is safe to .wait() here, because we are resumed and we get resumed only after the
-        // future finished.
-        // TODO: Dropping futures?
-        Ok(receiver.wait().expect("A future should never get dropped"))
+        Ok(task_inner.result.unwrap())
+    }
+}
+
+struct TaskInner<I, E, Fut> {
+    future: Fut,
+    result: Option<Result<I, E>>,
+    context: Option<Context>,
+}
+
+struct Task<I, E, Fut: Future<Item = I, Error = E>> {
+    inner: *mut TaskInner<I, E, Fut>,
+    finished: bool,
+}
+
+impl<I, E, Fut: Future<Item = I, Error = E>> Future for Task<I, E, Fut> {
+    type Item = ();
+    type Error = ();
+    fn poll(&mut self) -> Poll<(), ()> {
+        // XXX: Describe why safe
+        let me = unsafe { self.inner.as_mut().unwrap() };
+        assert!(me.context.is_some());
+        let res = match me.future.poll() {
+            Ok(Async::NotReady) => return Ok(Async::NotReady),
+            Ok(Async::Ready(ok)) => Ok(ok),
+            Err(err) => Err(err),
+        };
+        me.result = Some(res);
+        self.finished = true;
+        Switch::Resume.run_child(me.context.take().unwrap());
+        Ok(Async::Ready(()))
+    }
+}
+
+impl<I, E, Fut: Future<Item = I, Error = E>> Drop for Task<I, E, Fut> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // XXX: Describe why safe
+            let me = unsafe { self.inner.as_mut().unwrap() };
+            Switch::Cleanup.run_child(me.context.take().unwrap());
+        }
     }
 }
 
