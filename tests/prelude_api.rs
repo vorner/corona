@@ -19,9 +19,14 @@ test_suite! {
     fixture coro(coro: Cell<Coro>) -> () {
         params {
             let params: Vec<Coro> = vec![
+                // One future to wait on
                 || future::ok::<_, ()>(42).coro_wait().unwrap(),
+                // A stream with single Ok element
                 || stream::once::<_, ()>(Ok(42)).iter_ok().sum(),
+                // Stream with multiple elements, some errors. This one terminates at the first
+                // error.
                 || stream::iter(vec![Ok(42), Err(()), Ok(100)]).iter_ok().sum(),
+                // A stream with multiple elements, some errors. This one *skips* errors.
                 || {
                     stream::iter(vec![Ok(12), Err(()), Ok(30)])
                         .iter_result()
@@ -35,6 +40,9 @@ test_suite! {
         setup(&mut self) { }
     }
 
+    /// Runs a coroutine that likely waits on something.
+    ///
+    /// It checks the output is 42. Runs with different coroutines, see the fixture.
     test fourty_two(coro) {
         let mut core = Core::new().unwrap();
         let coro = coro.params.coro.replace(|| panic!());

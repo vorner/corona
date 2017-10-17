@@ -68,6 +68,7 @@
 //! # extern crate tokio_core;
 //! # use std::time::Duration;
 //! # use corona::Coroutine;
+//! # use corona::prelude::*;
 //! # use futures::Future;
 //! # use futures::unsync::oneshot;
 //! # use tokio_core::reactor::{Core, Timeout};
@@ -76,12 +77,12 @@
 //! let mut core = Core::new().unwrap();
 //! let (sender, receiver) = oneshot::channel();
 //! let handle = core.handle();
-//! let c = Coroutine::with_defaults(handle.clone(), move |_await| {
+//! let c = Coroutine::with_defaults(handle.clone(), move || {
 //!     core.run(receiver).unwrap();
 //! });
-//! Coroutine::with_defaults(handle, |await| {
-//!     let timeout = Timeout::new(Duration::from_millis(50), await.handle()).unwrap();
-//!     await.future(timeout).unwrap();
+//! Coroutine::with_defaults(handle.clone(), move || {
+//!     let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+//!     timeout.coro_wait().unwrap();
 //!     drop(sender.send(42));
 //! });
 //! c.wait().unwrap();
@@ -998,6 +999,4 @@ mod tests {
     fn panic_without_coroutine() {
         Coroutine::wait(future::ok::<_, ()>(42));
     }
-
-    // XXX Tests with dropping stuff
 }
