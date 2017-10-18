@@ -33,6 +33,17 @@ test_suite! {
                         .filter_map(Result::ok)
                         .sum()
                 },
+                // Makes sure we work with non-'static futures. This one touches stuff on the
+                // stack.
+                || {
+                    struct Num(u32);
+                    let num = Num(42);
+                    let num_ref = &num;
+                    future::ok::<_, ()>(num_ref)
+                        .coro_wait()
+                        .map(|&Num(num)| num)
+                        .unwrap()
+                },
             ];
             params.into_iter().map(Cell::new)
         }

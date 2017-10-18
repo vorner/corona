@@ -15,12 +15,7 @@ pub trait CoroutineFuture: Sized {
     }
 }
 
-impl<I, E, F> CoroutineFuture for F
-where
-    I: 'static,
-    E: 'static,
-    F: Future<Item = I, Error = E> + 'static,
-{
+impl<I, E, F: Future<Item = I, Error = E>> CoroutineFuture for F {
     type Item = I;
     type Error = E;
     fn coro_wait_cleanup(self) -> Result<Result<I, E>, Dropped> {
@@ -40,12 +35,7 @@ pub trait CoroutineStream: Sized {
     }
 }
 
-impl<I, E, S> CoroutineStream for S
-where
-    I: 'static,
-    E: 'static,
-    S: Stream<Item = I, Error = E> + 'static,
-{
+impl<I, E, S: Stream<Item = I, Error = E>> CoroutineStream for S {
     type Item = I;
     type Error = E;
     fn iter_cleanup(self) -> CleanupIterator<Self> {

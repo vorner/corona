@@ -14,12 +14,7 @@ impl<S> CleanupIterator<S> {
     // XXX into_inner
 }
 
-impl<I, E, S> Iterator for CleanupIterator<S>
-where
-    I: 'static,
-    E: 'static,
-    S: Stream<Item = I, Error = E> + 'static,
-{
+impl<I, E, S: Stream<Item = I, Error = E>> Iterator for CleanupIterator<S> {
     type Item = Result<Result<I, E>, Dropped>;
     fn next(&mut self) -> Option<Result<Result<I, E>, Dropped>> {
         let resolved = match self.0.take() {
@@ -46,12 +41,7 @@ impl<I> OkIterator<I> {
     // XXX into_inner
 }
 
-impl<I, E, S> Iterator for OkIterator<CleanupIterator<S>>
-where
-    I: 'static,
-    E: 'static,
-    S: Stream<Item = I, Error = E> + 'static,
-{
+impl<I, E, S: Stream<Item = I, Error = E>> Iterator for OkIterator<CleanupIterator<S>> {
     type Item = I;
     fn next(&mut self) -> Option<I> {
         self.0
@@ -70,12 +60,7 @@ impl<I> ResultIterator<I> {
     // XXX into_inner
 }
 
-impl<I, E, S> Iterator for ResultIterator<CleanupIterator<S>>
-where
-    I: 'static,
-    E: 'static,
-    S: Stream<Item = I, Error = E> + 'static,
-{
+impl<I, E, S: Stream<Item = I, Error = E>> Iterator for ResultIterator<CleanupIterator<S>> {
     type Item = Result<I, E>;
     fn next(&mut self) -> Option<Result<I, E>> {
         self.0

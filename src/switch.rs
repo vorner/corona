@@ -2,6 +2,8 @@
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
+use futures::{Async, Future, Poll};
+use tokio_core::reactor::Handle;
 
 use stack_cache;
 
@@ -19,16 +21,36 @@ impl<F: FnOnce(Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSize
 /// A fake Box<FnOnce(Context) -> Context>.
 type BoxedTask = Box<BoxableTask>;
 
-// XXX Docs
-pub trait RefCall {
-    fn perform(&mut self, Context);
+pub(crate) struct WaitTask {
+    pub(crate) poll: Option<&'static mut FnMut() -> Poll<(), ()>>,
+    pub(crate) context: Option<Context>,
+    pub(crate) handle: Handle,
 }
 
-impl<F: FnOnce(Context)> RefCall for Option<F> {
-    fn perform(&mut self, context: Context) {
-        self.take().unwrap()(context)
+impl Future for WaitTask {
+    type Item = ();
+    type Error = ();
+    fn poll(&mut self) -> Poll<(), ()> {
+        assert!(self.context.is_some());
+        match (self.poll.as_mut().unwrap())() {
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            other => {
+                drop(self.poll.take());
+                Switch::Resume.run_child(self.context.take().unwrap());
+                other
+            }
+        }
     }
 }
+
+impl Drop for WaitTask {
+    fn drop(&mut self) {
+        if let Some(context) = self.context.take() {
+            Switch::Cleanup.run_child(context);
+        }
+    }
+}
+
 
 /// Execution of a coroutine.
 ///
@@ -67,14 +89,14 @@ extern "C" fn coroutine(transfer: Transfer) -> ! {
 ///
 /// Note that not all instructions are valid at all contexts, but as this is not an API visible
 /// outside of the crate, that's likely OK with checking not thing invalid gets received.
-pub enum Switch {
+pub(crate) enum Switch {
     /// Start a new task in the coroutine.
     StartTask {
         stack: ProtectedFixedSizeStack,
         task: BoxedTask,
     },
-    OutsideCall {
-        call: &'static mut RefCall,
+    WaitFuture {
+        task: WaitTask,
     },
     /// Continue operation, the future is resolved.
     Resume,
@@ -146,8 +168,10 @@ impl Switch {
                 drop(context);
                 stack_cache::put(stack);
             },
-            OutsideCall { call } => {
-                call.perform(context);
+            WaitFuture { mut task } => {
+                task.context = Some(context);
+                let handle = task.handle.clone();
+                handle.spawn(task);
             },
             _ => unreachable!("Invalid switch instruction when switching out"),
         }

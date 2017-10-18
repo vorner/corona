@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::cell::RefCell;
+use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 
 use context::Context;
@@ -9,7 +10,7 @@ use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
 
 use errors::{Dropped, TaskFailed};
-use switch::Switch;
+use switch::{Switch, WaitTask};
 
 pub enum TaskResult<R> {
     Panicked(Box<Any + Send + 'static>),
@@ -140,7 +141,7 @@ impl Coroutine {
                 stack,
             };
             CONTEXTS.with(|c| c.borrow_mut().push(my_context));
-            let result = match panic::catch_unwind(AssertUnwindSafe(|| task())) {
+            let result = match panic::catch_unwind(AssertUnwindSafe(task)) {
                 Ok(res) => TaskResult::Finished(res),
                 Err(panic) => TaskResult::Panicked(panic),
             };
@@ -155,34 +156,37 @@ impl Coroutine {
         CoroutineResult { receiver }
     }
 
-    pub fn wait<I, E, Fut>(fut: Fut) -> Result<Result<I, E>, Dropped>
+    pub fn wait<I, E, Fut>(mut fut: Fut) -> Result<Result<I, E>, Dropped>
     where
-        I: 'static,
-        E: 'static,
-        Fut: Future<Item = I, Error = E> + 'static,
+        Fut: Future<Item = I, Error = E>,
     {
+        // XXX Describe the magic here
         let my_context = CONTEXTS.with(|c| {
             c.borrow_mut().pop().expect("Can't wait outside of a coroutine")
         });
-        let mut task_inner = TaskInner {
-            future: fut,
-            result: None,
-            context: None,
+        let mut result: Option<Result<I, E>> = None;
+        let (reply_instruction, context) = {
+            let res_ref = &mut result as *mut _ as usize;
+            let mut poll = move || {
+                let res = match fut.poll() {
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Ok(Async::Ready(ok)) => Ok(ok),
+                    Err(err) => Err(err),
+                };
+                let result = res_ref as *mut Option<Result<I, E>>;
+                unsafe { *result = Some(res) };
+                Ok(Async::Ready(()))
+            };
+            let p: &mut FnMut() -> Poll<(), ()> = &mut poll;
+            let handle = my_context.handle.clone();
+            let mut task = WaitTask {
+                poll: Some(unsafe { mem::transmute::<_, &'static mut _>(p) }),
+                context: None,
+                handle,
+            };
+            let instruction = Switch::WaitFuture { task };
+            instruction.exchange(my_context.parent_context)
         };
-        let task = Task {
-            inner: &mut task_inner,
-            finished: false,
-        };
-        let handle: *const Handle = &my_context.handle;
-        let mut create_task = Some(move |context| unsafe {
-            (*task.inner).context = Some(context);
-            (*handle).spawn(task);
-        });
-        let cheat: *mut _ = &mut create_task;
-        let instruction = Switch::OutsideCall {
-            call: unsafe { cheat.as_mut().unwrap() },
-        };
-        let (reply_instruction, context) = instruction.exchange(my_context.parent_context);
         let new_context = CoroutineContext {
             parent_context: context,
             stack: my_context.stack,
@@ -194,47 +198,7 @@ impl Coroutine {
             Switch::Cleanup => return Err(Dropped),
             _ => unreachable!("Invalid instruction on wakeup"),
         }
-        Ok(task_inner.result.unwrap())
-    }
-}
-
-struct TaskInner<I, E, Fut> {
-    future: Fut,
-    result: Option<Result<I, E>>,
-    context: Option<Context>,
-}
-
-struct Task<I, E, Fut: Future<Item = I, Error = E>> {
-    inner: *mut TaskInner<I, E, Fut>,
-    finished: bool,
-}
-
-impl<I, E, Fut: Future<Item = I, Error = E>> Future for Task<I, E, Fut> {
-    type Item = ();
-    type Error = ();
-    fn poll(&mut self) -> Poll<(), ()> {
-        // XXX: Describe why safe
-        let me = unsafe { self.inner.as_mut().unwrap() };
-        assert!(me.context.is_some());
-        let res = match me.future.poll() {
-            Ok(Async::NotReady) => return Ok(Async::NotReady),
-            Ok(Async::Ready(ok)) => Ok(ok),
-            Err(err) => Err(err),
-        };
-        me.result = Some(res);
-        self.finished = true;
-        Switch::Resume.run_child(me.context.take().unwrap());
-        Ok(Async::Ready(()))
-    }
-}
-
-impl<I, E, Fut: Future<Item = I, Error = E>> Drop for Task<I, E, Fut> {
-    fn drop(&mut self) {
-        if !self.finished {
-            // XXX: Describe why safe
-            let me = unsafe { self.inner.as_mut().unwrap() };
-            Switch::Cleanup.run_child(me.context.take().unwrap());
-        }
+        Ok(result.unwrap())
     }
 }
 
