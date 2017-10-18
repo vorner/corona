@@ -36,10 +36,10 @@ fn fut_get() -> Box<Future<Item = (), Error = ()>> {
     Box::new(future::lazy(|| Ok::<_, ()>(())))
 }
 
-fn coroutine_panic(status: Status) {
+fn coroutine_panic(status: &Status) {
     let fut = fut_get();
     status.0.set(true);
-    drop(fut.coro_wait());
+    let _ = fut.coro_wait();
     status.1.set(true);
 }
 
@@ -48,7 +48,7 @@ fn coroutine_panic(status: Status) {
 #[test]
 fn cleanup_panic() {
     let coroutine_get = |handle, status: Status| {
-            Coroutine::with_defaults(handle, || coroutine_panic(status))
+            Coroutine::with_defaults(handle, move || coroutine_panic(&status))
         };
         let core = Core::new().unwrap();
         let handle = core.handle();
@@ -68,7 +68,7 @@ fn cleanup_panic() {
         finished.wait().unwrap_err();
 }
 
-fn coroutine_nopanic(status: Status) {
+fn coroutine_nopanic(status: &Status) {
     let fut = fut_get();
     status.0.set(true);
     fut.coro_wait_cleanup().unwrap_err();
@@ -84,7 +84,7 @@ fn cleanup_nopanic() {
     let core = Core::new().unwrap();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(status_cp));
+    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(&status_cp));
 
     status.before_drop();
     // The coroutine finishes once we drop the core. Note that it finishes sucessfully, not
@@ -100,7 +100,7 @@ fn cleanup_main_panic() {
     let core = Core::new().unwrap();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(status_cp));
+    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(&status_cp));
     status.before_drop();
     panic_core(core);
     status.after_drop(false);
