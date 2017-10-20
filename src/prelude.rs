@@ -1,8 +1,11 @@
 // XXX Docs
-use futures::{Future, Stream};
+
+use std::iter;
+
+use futures::{Future, Sink, Stream};
 
 use errors::Dropped;
-use wrappers::{CleanupIterator, OkIterator, ResultIterator};
+use wrappers::{CleanupIterator, OkIterator, ResultIterator, SinkSender};
 
 pub use coroutine::Coroutine;
 
@@ -43,6 +46,46 @@ impl<I, E, S: Stream<Item = I, Error = E>> CoroutineStream for S {
     }
 }
 
+pub trait CoroutineSink: Sized {
+    type Item;
+    type Error;
+    // Yay, that's a generic mouthful…
+    fn coro_sender<Iter, I>(&mut self, iter: I) -> SinkSender<Self::Item, Self, Iter>
+    where
+        Iter: Iterator<Item = Self::Item>,
+        I: IntoIterator<Item = Self::Item, IntoIter = Iter>;
+    fn coro_send(&mut self, item: Self::Item) -> Result<(), Self::Error>;
+    fn coro_send_cleanup(&mut self, item: Self::Item) -> Result<Result<(), Self::Error>, Dropped>;
+    fn coro_send_many<Iter, I>(&mut self, iter: I) -> Result<Result<(), Self::Error>, Dropped>
+    where
+        Iter: Iterator<Item = Self::Item>,
+        I: IntoIterator<Item = Self::Item, IntoIter = Iter>;
+}
+
+impl<I, E, S: Sink<SinkItem = I, SinkError = E>> CoroutineSink for S {
+    type Item = I;
+    type Error = E;
+    fn coro_sender<Iter, Src>(&mut self, iter: Src) -> SinkSender<Self::Item, Self, Iter>
+    where
+        Iter: Iterator<Item = Self::Item>,
+        Src: IntoIterator<Item = Self::Item, IntoIter = Iter>
+    {
+        SinkSender::new(self, iter)
+    }
+    fn coro_send(&mut self, item: Self::Item) -> Result<(), Self::Error> {
+        self.coro_sender(iter::once(item)).coro_wait()
+    }
+    fn coro_send_cleanup(&mut self, item: Self::Item) -> Result<Result<(), Self::Error>, Dropped> {
+        self.coro_sender(iter::once(item)).coro_wait_cleanup()
+    }
+    fn coro_send_many<Iter, Src>(&mut self, iter: Src) -> Result<Result<(), Self::Error>, Dropped>
+    where
+        Iter: Iterator<Item = Self::Item>,
+        Src: IntoIterator<Item = Self::Item, IntoIter = Iter>
+    {
+        self.coro_sender(iter).coro_wait_cleanup()
+    }
+}
+
 // Once we have non-static futures, we want...
 // TODO: Getting one element out of a stream
-// TODO: Pushing one element into a sink
