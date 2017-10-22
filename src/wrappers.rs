@@ -69,6 +69,22 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for ResultIterator<CleanupIt
     }
 }
 
+pub struct StreamExtractor<'a, S: 'a>(&'a mut S);
+
+impl<'a, S: 'a> StreamExtractor<'a, S> {
+    pub fn new(stream: &'a mut S) -> Self {
+        StreamExtractor(stream)
+    }
+}
+
+impl<'a, I, E, S: Stream<Item = I, Error = E> + 'a> Future for StreamExtractor<'a, S> {
+    type Item = Option<I>;
+    type Error = E;
+    fn poll(&mut self) -> Poll<Option<I>, E> {
+        self.0.poll()
+    }
+}
+
 pub struct SinkSender<'a, V, S: 'a, I: Iterator<Item = V>> {
     sink: &'a mut S,
     iter: Option<I>,
@@ -130,8 +146,21 @@ where
 mod tests {
     use super::*;
 
+    use futures::stream;
     use futures::sync::mpsc;
     use tokio_core::reactor::Core;
+
+    /// Test getting things out of a stream one by one.
+    ///
+    /// This is similar to the .into_future() stream modifier, but doesn't consume the stream. That
+    /// is more convenient in the context of coroutines, which allow waiting for non-'static
+    /// futures.
+    #[test]
+    fn stream_extract() {
+        let mut s = stream::once::<_, ()>(Ok(42));
+        assert_eq!(StreamExtractor::new(&mut s).wait(), Ok(Some(42)));
+        assert_eq!(StreamExtractor::new(&mut s).wait(), Ok(None));
+    }
 
     /// A test checking that sink_sender feeds everything to the sink.
     ///

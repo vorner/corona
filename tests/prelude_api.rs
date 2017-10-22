@@ -102,3 +102,11 @@ fn push_sink() {
     // The producer is done by now
     producer.wait().unwrap();
 }
+
+/// Taking one thing out of a stream
+#[test]
+fn extract() {
+    let mut cor = Cor::new();
+    let mut s = stream::once::<_, ()>(Ok(42));
+    cor.cor_ft(move || s.coro_next().unwrap().unwrap());
+}

@@ -1,11 +1,5 @@
 * More examples
 * Look at the unwind safety and unwinding in general.
-* Try to get rid of so many 'static bounds everywhere ‒ like when awaiting.
 * Something like select
 * Wait for future with timeout?
-* Build fails on half of appveyor ‒ seems like some issue with compiler, look if it can be made work
 * Can we rely on *any* future executor?
-* Generators might want to run only when next is called on them
-  - How will their clean up work?
-* https://github.com/laumann/compiletest-rs
-  - Try that we can't block inside a future modifier

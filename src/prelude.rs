@@ -5,7 +5,7 @@ use std::iter;
 use futures::{Future, Sink, Stream};
 
 use errors::Dropped;
-use wrappers::{CleanupIterator, OkIterator, ResultIterator, SinkSender};
+use wrappers::{CleanupIterator, OkIterator, ResultIterator, SinkSender, StreamExtractor};
 
 pub use coroutine::Coroutine;
 
@@ -36,6 +36,11 @@ pub trait CoroutineStream: Sized {
     fn iter_result(self) -> ResultIterator<CleanupIterator<Self>> {
         ResultIterator::new(self.iter_cleanup())
     }
+    fn extractor(&mut self) -> StreamExtractor<Self>;
+    fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped>;
+    fn coro_next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
+        self.coro_next_cleanup().unwrap()
+    }
 }
 
 impl<I, E, S: Stream<Item = I, Error = E>> CoroutineStream for S {
@@ -43,6 +48,12 @@ impl<I, E, S: Stream<Item = I, Error = E>> CoroutineStream for S {
     type Error = E;
     fn iter_cleanup(self) -> CleanupIterator<Self> {
         CleanupIterator::new(self)
+    }
+    fn extractor(&mut self) -> StreamExtractor<Self> {
+        StreamExtractor::new(self)
+    }
+    fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped> {
+        self.extractor().coro_wait_cleanup()
     }
 }
 
@@ -86,6 +97,3 @@ impl<I, E, S: Sink<SinkItem = I, SinkError = E>> CoroutineSink for S {
         self.coro_sender(iter).coro_wait_cleanup()
     }
 }
-
-// Once we have non-static futures, we want...
-// TODO: Getting one element out of a stream
