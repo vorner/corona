@@ -160,7 +160,41 @@ impl Coroutine {
     where
         Fut: Future<Item = I, Error = E>,
     {
-        // XXX Describe the magic here
+        // Grimoire marginalia (eg. a sidenote on the magic here).
+        //
+        // This is probably the hearth of the library both in the importance and complexity to
+        // understand. We want to wait for the future to finish.
+        //
+        // To do that we do the following:
+        // • Prepare a space for the result on our own stack.
+        // • Prepare a wrapper future that'll do some bookkeeping around the user's future ‒ for
+        //   example makes sure the wrapper future has the same signature and can be spawned onto
+        //   the reactor.
+        // • Switch to our parent context with the instruction to install the future for us into
+        //   the reactor.
+        //
+        // Some time later, as the reactor runs, the future resolves. It'll do the following:
+        // • Store the result into the prepared space on our stack.
+        // • Switch the context back to us.
+        // • This function resumes, picks ups the result from its stack and returns it.
+        //
+        // There are few unsafe blocks here, some of them looking a bit dangerous. So, some
+        // rationale why this should be in fact safe.
+        //
+        // The handle.spawn() requires a 'static future. It is because the future will almost
+        // certainly live longer than the stack frame that spawned it onto the reactor. Therefore,
+        // the future must own anything it'll touch in some unknown later time.
+        //
+        // However, this is true in our case. The closure that runs in a coroutine is required to
+        // be 'static. Therefore, anything non-'static must live on the coroutine's stack. And the
+        // future has the only pointer to the stack of this coroutine, therefore effectively owns
+        // the stack and everything on it.
+        //
+        // In other words, the stack is there for as long as the future waits idle in the reactor
+        // and won't go away before the future either resolves or is dropped. There's a small trick
+        // in the `drop` implementation and the future itself to ensure this is true even when
+        // switching the contexts (it is true when we switch to this coroutine, but not after we
+        // leave it, so the future's implementation must not touch the things afterwards.
         let my_context = CONTEXTS.with(|c| {
             c.borrow_mut().pop().expect("Can't wait outside of a coroutine")
         });
