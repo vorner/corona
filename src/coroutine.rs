@@ -95,6 +95,18 @@ impl Coroutine {
             leak_on_panic: false,
         }
     }
+    /// Configures the stack size used for coroutines.
+    ///
+    /// Coroutines spawned from this builder will get stack of this size. The default is something
+    /// small, so if you use recursion, you might want to use this.
+    ///
+    /// Note that the size must be a valid stack size. This is platform dependente, but usually
+    /// must be multiple of a page size. That usually means a multiple of 4096.
+    ///
+    /// If an invalid size is set, attemts to spawn coroutines will fail with an error.
+    pub fn stack_size(&mut self, size: usize) {
+        self.stack_size = size;
+    }
     /// Spawns a coroutine directly.
     ///
     /// This constructor spawns a coroutine with default parameters without the inconvenience of
@@ -257,8 +269,8 @@ mod tests {
         let s2c = s2.clone();
         let handle = core.handle();
 
-        let builder = Coroutine::new(handle);
-        // builder.stack_size(40960); XXX
+        let mut builder = Coroutine::new(handle);
+        builder.stack_size(40960);
         let builder_inner = builder.clone();
 
         let result = builder.spawn(move || {
