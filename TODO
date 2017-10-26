@@ -3,3 +3,5 @@
 * Something like select
 * Wait for future with timeout?
 * Can we rely on *any* future executor?
+* Iterator that leaves the rest there on break
+* leak_on_panic support
