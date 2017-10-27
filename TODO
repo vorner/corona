@@ -5,3 +5,6 @@
 * Can we rely on *any* future executor?
 * Iterator that leaves the rest there on break
 * leak_on_panic support
+* Spawn one future per coroutine (possibly lazily) that just delegates to
+  whatever is being waited on right now instead of spawning one for every
+  waited thing. Challeng: how to resolve it once the coroutine ends?
