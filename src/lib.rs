@@ -16,7 +16,9 @@
 //! can be done in a top-level function only) and there are too many `'static` bounds.
 //!
 //! This library brings a more convenient interface. However, it comes with a run-time cost, so you
-//! might want to consider if you prefer ease of development or speed of execution.
+//! might want to consider if you prefer ease of development or speed of execution. Often, the
+//! asynchronous communication isn't the bottleneck and you won't be handling millions of
+//! concurrent connections, so this might be OK.
 //!
 //! # The cost
 //!
@@ -103,7 +105,8 @@
 //! The API is still being experimented with. Things might change. If you want to help reach
 //! stability, try it out and provide feedback.
 //!
-//! However, it is considered useful by the author nevertheless.
+//! However, it is probably useful already and I won't do breaking changes in a patch version
+//! update.
 //!
 //! # Known problems
 //!

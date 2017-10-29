@@ -1,11 +1,17 @@
 # Corona
 
-This is an experiment aiming to integrate coroutines with futures in Rust. It
-works, but is still considered very experimental and the API will likely
-change (it is experimental API-wise, it doesn't crash or eat your data). Also,
-there are several yet unsolved problems.
+[![Travis Build Status](https://api.travis-ci.org/vorner/corona.png?branch=master)](https://travis-ci.org/vorner/corona)
+[![AppVeyor Build status](https://ci.appveyor.com/api/projects/status/ygytb97bion810ru/branch/master?svg=true)](https://ci.appveyor.com/project/vorner/corona/branch/master)
 
-You want to read the [docs](https://docs.rs/corona).
+Stackfull coroutines in Rust, integrating well with
+[futures](https://crates.io/crates/futures).
+
+This is often more convenient than using just futures or
+[futures-await](https://github.com/alexcrichton/futures-await) (and works on
+stable). But it comes with a runtime cost.
+
+You want to read the [docs](https://docs.rs/corona) and examine the
+[examples](https://github.com/vorner/corona/tree/master/examples).
 
 When you try it out, I'm interested in hearing some feedback (if it works for
 you, if the API could be improved somehow).
