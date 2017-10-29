@@ -61,7 +61,7 @@ type Clients = Rc<RefCell<Vec<Client>>>;
 
 fn handle_connection(handle: &Handle,
                      connection: TcpStream,
-                     clients: Clients,
+                     clients: &Clients,
                      mut msgs: Sender<String>)
 {
     let (input, output) = connection.split();
@@ -82,7 +82,7 @@ fn handle_connection(handle: &Handle,
     });
 }
 
-fn broadcaster(msgs: Receiver<String>, clients: Clients) {
+fn broadcaster(msgs: Receiver<String>, clients: &Clients) {
     // We have to steal the clients. We can't keep a mut borrow into the clients for the time of
     // the future, since someone else might try to add more at the same time, which would panic.
     let mut extracted = Vec::new();
@@ -95,10 +95,10 @@ fn broadcaster(msgs: Receiver<String>, clients: Clients) {
             let msg = Rc::new(msg);
             // Schedule sending of the message to everyone in parallel
             let all_sent = extracted.iter_mut()
-                .map(|client| SinkSender::new(client, iter::once(msg.clone())))
+                .map(|client| SinkSender::new(client, iter::once(Rc::clone(&msg))))
                 // Turn failures into falses, so it plays nice with collect below.
                 .map(|send_future| send_future.then(|res| Ok::<_, IoError>(res.is_ok())));
-            let broken_idxs = future::join_all(all_sent) // Create a mega-future of everything
+            future::join_all(all_sent) // Create a mega-future of everything
                 .coro_wait() // Wait for them
                 .unwrap() // Impossible to fail
                 // Take only the indices of things that failed to send.
@@ -109,8 +109,7 @@ fn broadcaster(msgs: Receiver<String>, clients: Clients) {
                     } else {
                         Some(idx)
                     })
-                .collect::<Vec<_>>();
-            broken_idxs
+                .collect::<Vec<_>>()
         };
         // Remove the failing ones. We go from the back, since swap_remove reorders the tail.
         for idx in broken_idxs.into_iter().rev() {
@@ -119,8 +118,8 @@ fn broadcaster(msgs: Receiver<String>, clients: Clients) {
     }
 }
 
-fn acceptor(handle: Handle, clients: Clients, sender: Sender<String>) {
-    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), &handle).unwrap();
+fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
+    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), handle).unwrap();
     let incoming = listener.incoming();
     // This will accept the connections, but will allow other coroutines to run when there are
     // none ready.
@@ -128,7 +127,7 @@ fn acceptor(handle: Handle, clients: Clients, sender: Sender<String>) {
         match attempt {
             Ok((connection, address)) => {
                 eprintln!("Received a connection from {}", address);
-                handle_connection(&handle, connection, clients.clone(), sender.clone());
+                handle_connection(handle, connection, clients, sender.clone());
             },
             // FIXME: Are all the errors recoverable?
             Err(e) => eprintln!("An error accepting a connection: {}", e),
@@ -143,9 +142,13 @@ fn main() {
 
     let (sender, receiver) = mpsc::channel(100);
     let clients = Clients::default();
-    let clients_rc = clients.clone();
-    let broadcaster = Coroutine::with_defaults(core.handle(), || broadcaster(receiver, clients_rc));
-    let acceptor = Coroutine::with_defaults(core.handle(), || acceptor(handle, clients, sender));
+    let clients_rc = Rc::clone(&clients);
+    let broadcaster = Coroutine::with_defaults(core.handle(), move || {
+        broadcaster(receiver, &clients_rc)
+    });
+    let acceptor = Coroutine::with_defaults(core.handle(), move || {
+        acceptor(&handle, &clients, &sender)
+    });
     // Let the acceptor and everything else run.
     // Propagate all panics from the coroutine to the main thread with the unwrap
     core.run(broadcaster.join(acceptor)).unwrap();

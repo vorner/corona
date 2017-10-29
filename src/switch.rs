@@ -8,7 +8,7 @@ use tokio_core::reactor::Handle;
 use stack_cache;
 
 /// A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
-pub trait BoxableTask {
+pub(crate) trait BoxableTask {
     fn perform(&mut self, Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack);
 }
 

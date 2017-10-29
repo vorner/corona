@@ -12,7 +12,7 @@ use tokio_core::reactor::Handle;
 use errors::{Dropped, TaskFailed};
 use switch::{Switch, WaitTask};
 
-pub enum TaskResult<R> {
+enum TaskResult<R> {
     Panicked(Box<Any + Send + 'static>),
     Finished(R),
 }
