@@ -63,7 +63,7 @@
 //!     });
 //!     // The reactor must be run so coroutines that wait on something get woken up.
 //!     // We would get `Err(_)` if the coroutine panicked.
-//!     core.run(coro).unwrap();
+//!     assert_eq!(42, core.run(coro).unwrap());
 //! }
 //! ```
 //!
