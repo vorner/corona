@@ -1,3 +1,5 @@
+//! The [`Coroutine`](struct.Coroutine.html) and related things.
+
 use std::any::Any;
 use std::cell::RefCell;
 use std::mem;
@@ -9,7 +11,7 @@ use futures::{Async, Future, Poll};
 use futures::unsync::oneshot::{self, Receiver};
 use tokio_core::reactor::Handle;
 
-use errors::{Dropped, TaskFailed};
+use errors::{Dropped, StackError, TaskFailed};
 use switch::{Switch, WaitTask};
 
 enum TaskResult<R> {
@@ -18,6 +20,9 @@ enum TaskResult<R> {
 }
 
 /// A `Future` representing a completion of a coroutine.
+///
+/// Returns the result of the task the coroutine runs or the reason why it failed (it got lost
+/// during shutdown or panicked).
 pub struct CoroutineResult<R> {
     receiver: Receiver<TaskResult<R>>,
 }
@@ -95,6 +100,7 @@ impl Coroutine {
             leak_on_panic: false,
         }
     }
+
     /// Configures the stack size used for coroutines.
     ///
     /// Coroutines spawned from this builder will get stack of this size. The default is something
@@ -104,9 +110,14 @@ impl Coroutine {
     /// must be multiple of a page size. That usually means a multiple of 4096.
     ///
     /// If an invalid size is set, attemts to spawn coroutines will fail with an error.
+    ///
+    /// # Parameters
+    ///
+    /// * `size`: The stack size to use for newly spawned coroutines.
     pub fn stack_size(&mut self, size: usize) {
         self.stack_size = size;
     }
+
     /// Spawns a coroutine directly.
     ///
     /// This constructor spawns a coroutine with default parameters without the inconvenience of
@@ -115,18 +126,31 @@ impl Coroutine {
     /// Unlike the [`spawn`](#method.spawn.html), this one can't fail, since the default parameters
     /// of the builder are expected to always work (if they don't, file a bug).
     ///
+    /// # Parameters
+    ///
+    /// * `handle`: Handle to the reactor the coroutine will use to suspend its execution and wait
+    ///   for events.
+    /// * `task`: The closure to run inside the coroutine.
+    ///
+    /// # Returns
+    ///
+    /// A future that'll resolve once the coroutine completes, with the result of the `task`, or
+    /// with an error explaining why the coroutine failed.
+    ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// # extern crate corona;
     /// # extern crate tokio_core;
     /// use corona::Coroutine;
     /// use tokio_core::reactor::Core;
     ///
     /// # fn main() {
-    /// let core = Core::new().unwrap();
+    /// let mut core = Core::new().unwrap();
     ///
     /// let coroutine = Coroutine::with_defaults(core.handle(), || { });
+    ///
+    /// core.run(coroutine).unwrap();
     /// # }
     ///
     /// ```
@@ -135,9 +159,43 @@ impl Coroutine {
         R: 'static,
         Task: FnOnce() -> R + 'static,
     {
-        Coroutine::new(handle).spawn(task)
+        Coroutine::new(handle).spawn(task).unwrap()
     }
-    pub fn spawn<R, Task>(&self, task: Task) -> CoroutineResult<R>
+
+    /// Spawns a coroutine with configuration from the builder.
+    ///
+    /// This spawns a new coroutine with the values previously set in the builder.
+    ///
+    /// # Parameters
+    ///
+    /// * `task`: The closure to run inside the coroutine.
+    ///
+    /// # Returns
+    ///
+    /// A future that'll resolve once the coroutine terminates and will yield the result of
+    /// `task`, or an error explaining why the coroutine failed.
+    ///
+    /// This returns a `StackError` if the configured stack size is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate corona;
+    /// # extern crate tokio_core;
+    /// use corona::Coroutine;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let mut core = Core::new().unwrap();
+    ///
+    /// let mut builder = Coroutine::new(core.handle());
+    /// builder.stack_size(40960);
+    /// let coroutine = builder.spawn(|| { }).unwrap();
+    ///
+    /// core.run(coroutine).unwrap();
+    /// # }
+    /// ```
+    pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
     where
         R: 'static,
         Task: FnOnce() -> R + 'static,
@@ -163,11 +221,31 @@ impl Coroutine {
             let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
             (my_context.parent_context, my_context.stack)
         };
-        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)));
+        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)))?;
 
-        CoroutineResult { receiver }
+        Ok(CoroutineResult { receiver })
     }
 
+    /// Waits for completion of a future.
+    ///
+    /// This suspends the execution of the current coroutine until the provided future is
+    /// completed, possibly switching to other coroutines in the meantime.
+    ///
+    /// This is the low-level implementation of the waiting. It is expected user code will use the
+    /// interface in [`prelude`](../prelude/index.html) instead.
+    ///
+    /// # Parameters
+    ///
+    /// * `fut`: The future to wait on.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(result)` with the result the future resolved to.
+    /// * `Err(Dropped)` when the reactor was dropped before the future had a chance to resolve.
+    ///
+    /// # Panics
+    ///
+    /// If called outside of a coroutine (there's nothing to suspend).
     pub fn wait<I, E, Fut>(mut fut: Fut) -> Result<Result<I, E>, Dropped>
     where
         Fut: Future<Item = I, Error = E>,
@@ -274,13 +352,15 @@ mod tests {
         let builder_inner = builder.clone();
 
         let result = builder.spawn(move || {
-            let result = builder_inner.spawn(move || {
-                s2c.store(true, Ordering::Relaxed);
-                42
-            });
-            s1c.store(true, Ordering::Relaxed);
-            result
-        });
+                let result = builder_inner.spawn(move || {
+                        s2c.store(true, Ordering::Relaxed);
+                        42
+                    })
+                    .unwrap();
+                s1c.store(true, Ordering::Relaxed);
+                result
+            })
+            .unwrap();
 
         // Both coroutines run to finish
         assert!(s1.load(Ordering::Relaxed), "The outer closure didn't run");

@@ -3,6 +3,8 @@ use std::collections::HashMap;
 
 use context::stack::ProtectedFixedSizeStack;
 
+use errors::StackError;
+
 thread_local! {
     static CACHE: RefCell<HashMap<usize, Vec<ProtectedFixedSizeStack>>> =
         RefCell::new(HashMap::new());
@@ -13,13 +15,13 @@ thread_local! {
 /// Retrieve it from the cache or create a new one, if none is available.
 ///
 /// The cache is thread local.
-pub(crate) fn get(size: usize) -> ProtectedFixedSizeStack {
+pub(crate) fn get(size: usize) -> Result<ProtectedFixedSizeStack, StackError> {
     CACHE.with(|c| {
         let mut cell = c.borrow_mut();
         cell.get_mut(&size)
-            .and_then(|v| v.pop())
+            .and_then(|v| v.pop().map(Ok))
             .unwrap_or_else(|| {
-                ProtectedFixedSizeStack::new(size).expect("Invalid stack size")
+                ProtectedFixedSizeStack::new(size)
             })
     })
 }

@@ -1,4 +1,5 @@
 #![doc(html_root_url = "https://docs.rs/corona/0.2.1/corona/")]
+#![warn(missing_docs)]
 
 //! A library combining futures and coroutines.
 //!
@@ -179,20 +180,22 @@
 //! let builder = Coroutine::new(core.handle());
 //! let (sender, receiver) = mpsc::channel(1);
 //! builder.spawn(|| {
-//!     let mut sender = sender;
-//!     sender = sender.send(1).coro_wait().unwrap();
-//!     sender = sender.send(2).coro_wait().unwrap();
-//! });
+//!         let mut sender = sender;
+//!         sender = sender.send(1).coro_wait().unwrap();
+//!         sender = sender.send(2).coro_wait().unwrap();
+//!     })
+//!     .unwrap();
 //! let coroutine = builder.spawn(move || {
-//!     for item in receiver.iter_ok() {
-//!         println!("{}", item);
-//!     }
+//!         for item in receiver.iter_ok() {
+//!             println!("{}", item);
+//!         }
 //!
-//!     let timeout = Timeout::new(Duration::from_millis(100), &handle).unwrap();
-//!     timeout.coro_wait().unwrap();
+//!         let timeout = Timeout::new(Duration::from_millis(100), &handle).unwrap();
+//!         timeout.coro_wait().unwrap();
 //!
-//!     42
-//! });
+//!         42
+//!     })
+//!     .unwrap();
 //! assert_eq!(42, core.run(coroutine).unwrap());
 //! # }
 //! ```

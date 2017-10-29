@@ -104,7 +104,6 @@ impl<'a, V, S: 'a, I: Iterator<Item = V>> SinkSender<'a, V, S, I> {
     fn next(&mut self) -> Option<V> {
         // A postponed value
         if self.value.is_some() {
-            eprintln!("Postponed value");
             return self.value.take();
         }
         // If we have nothing postponed, try pulling it from an iterator, if we have one.

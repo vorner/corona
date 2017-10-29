@@ -334,6 +334,10 @@ pub trait CoroutineSink: Sized {
     /// This is more convenient with the coroutines, because they can wait on something that is not
     /// `'static`.
     ///
+    /// # Parameters
+    ///
+    /// * `item`: The item to be sent.
+    ///
     /// # Panics
     ///
     /// If the reactor is dropped before the sending is done.
@@ -367,6 +371,10 @@ pub trait CoroutineSink: Sized {
     /// difference is it doesn't panic on dropped reactor. Instead, it returns `Err(Dropped)` and
     /// allows manual cleanup of the coroutine.
     ///
+    /// # Parameters
+    ///
+    /// * `item`: The item to be sent.
+    ///
     /// # Panics
     ///
     /// If it is called outside of a coroutine.
@@ -377,6 +385,10 @@ pub trait CoroutineSink: Sized {
     /// This is like [`coro_send_cleanup`](#method.coro_send_cleanup). However, it sends multiple
     /// items instead of one. This is potentially faster than pushing them one by one, since the
     /// sink „flushes“ just once after the whole batch.
+    ///
+    /// # Parameters
+    ///
+    /// * `iter`: Iterator over the items to send.
     ///
     /// # Panics
     ///
@@ -393,6 +405,10 @@ pub trait CoroutineSink: Sized {
     ///
     /// It can be used to combine the future with something else, like sending to multiple sinks in
     /// parallel.
+    ///
+    /// # Parameters
+    ///
+    /// * `iter`: The iterator over items to be sent.
     fn coro_sender<Iter, I>(&mut self, iter: I) -> SinkSender<Self::Item, Self, Iter>
     where
         Iter: Iterator<Item = Self::Item>,

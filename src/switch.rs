@@ -5,6 +5,7 @@ use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Future, Poll};
 use tokio_core::reactor::Handle;
 
+use errors::StackError;
 use stack_cache;
 
 /// A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
@@ -177,14 +178,15 @@ impl Switch {
         }
     }
     /// Creates a new coroutine and runs it.
-    pub(crate) fn run_new_coroutine(stack_size: usize, task: BoxedTask) {
-        let stack = stack_cache::get(stack_size);
+    pub(crate) fn run_new_coroutine(stack_size: usize, task: BoxedTask) -> Result<(), StackError> {
+        let stack = stack_cache::get(stack_size)?;
         assert_eq!(stack.len(), stack_size);
         // The `Context::new` is unsafe only because we have to promise not to delete the stack
         // prematurely, while the coroutine is still alive. We ensure that by giving the ownership
         // of the stack to the coroutine and it gives it up only once it is ready to terminate.
         let context = unsafe { Context::new(&stack, coroutine) };
         Switch::StartTask { stack, task }.run_child(context);
+        Ok(())
     }
 }
 
@@ -203,7 +205,7 @@ mod tests {
             called_cp.set(true);
             (context, stack)
         };
-        Switch::run_new_coroutine(40960, Box::new(Some(task)));
+        Switch::run_new_coroutine(40960, Box::new(Some(task))).unwrap();
         assert!(called.get());
         assert_eq!(1, Rc::strong_count(&called));
     }

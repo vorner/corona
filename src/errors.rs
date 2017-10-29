@@ -1,6 +1,10 @@
+//! Varius errors.
+
 use std::any::Any;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+
+pub use context::stack::StackError;
 
 /// An error marker when a future is dropped before having change to get resolved.
 ///
