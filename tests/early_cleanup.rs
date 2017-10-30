@@ -107,34 +107,6 @@ fn cleanup_main_panic() {
     finished.wait().unwrap();
 }
 
-/* XXX
-/// When we panic and drop the core and we ask to leak instead of double-panic, make sure it is
-/// done so.
-#[test]
-fn leak_main_panic() {
-    let core = Core::new().unwrap();
-    let status = Status::default();
-    let status_cp = status.clone();
-    let finished = Coroutine::new(core.handle())
-        .leak_on_panic(true)
-        .spawn(move |await| coroutine_panic(await, status_cp));
-    status.before_drop();
-    panic_core(core);
-    // The status hasn't changed, as no unwinding in the coroutine happened
-    status.before_drop();
-    // And the future is *not* resolved. Test it by creating a new core and providing a timeout
-    // that overtakes it.
-    let mut core = Core::new().unwrap();
-    let timeout = Timeout::new(Duration::from_millis(200), &core.handle()).unwrap();
-    let combined = finished.select2(timeout);
-    match core.run(combined) {
-        Err(_) => unreachable!(),
-        Ok(Either::A(_)) => panic!("The coroutine resolved"),
-        Ok(Either::B(_)) => (),
-    }
-}
-*/
-
 /// Make the core go away by panicking inside a closure that holds it
 fn panic_core(core: Core) {
     panic::catch_unwind(AssertUnwindSafe(|| {

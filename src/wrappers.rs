@@ -1,17 +1,37 @@
-// XXX Docs
+//! Various wrappers and helper structs.
+//!
+//! The types here are not expected to be used directly. These wrap some things (futures,
+//! references) and implement other functionality on them, but are usually created through methods
+//! in [`prelude`](../prelude/index.html).
+//!
+//! Despite that, they still can be created and used directly if the need arises.
 
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 
+use prelude::CoroutineFuture;
 use errors::Dropped;
-use prelude::*;
 
+/// An iterator returned from
+/// [`CoroutineStream::iter_cleanup`](../prelude/trait.CoroutineStream.html#method.iter_cleanup).
+///
+/// It wraps a stream and allows iterating through it.
 pub struct CleanupIterator<S>(Option<S>);
 
 impl<S> CleanupIterator<S> {
+    /// A constructor.
     pub fn new(stream: S) -> Self {
         CleanupIterator(Some(stream))
     }
-    // XXX into_inner
+
+    /// Extracts the stream inside.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(stream)` under normal circumstances.
+    /// * `Err(Dropped)` if the stream got lost when the reactor got dropped while iterating.
+    pub fn into_inner(self) -> Result<S, Dropped> {
+        self.0.ok_or(Dropped)
+    }
 }
 
 impl<I, E, S: Stream<Item = I, Error = E>> Iterator for CleanupIterator<S> {
@@ -32,13 +52,23 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for CleanupIterator<S> {
     }
 }
 
+/// An iterator returned from
+/// [`CoroutineStream::iter_ok`](../prelude/trait.CoroutineStream.html#method.iter_ok).
+///
+/// This wraps the [`CleanupIterator`](struct.CleanupIterator.html) and provides iteration through
+/// the successful items.
 pub struct OkIterator<I>(I);
 
 impl<I> OkIterator<I> {
+    /// A constructor.
     pub fn new(inner: I) -> Self {
         OkIterator(inner)
     }
-    // XXX into_inner
+
+    /// Extracts the `CleanupIterator` inside.
+    pub fn into_inner(self) -> I {
+        self.0
+    }
 }
 
 impl<I, E, S: Stream<Item = I, Error = E>> Iterator for OkIterator<CleanupIterator<S>> {
@@ -51,13 +81,23 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for OkIterator<CleanupIterat
     }
 }
 
+/// An iterator returned from
+/// [`CoroutineStream::iter_result`](../prelude/trait.CoroutineStream.html#method.iter_result).
+///
+/// This wraps the [`CleanupIterator`](struct.CleanupIterator.html) and provides iteration through
+/// the direct results.
 pub struct ResultIterator<I>(I);
 
 impl<I> ResultIterator<I> {
+    /// A constructor.
     pub fn new(inner: I) -> Self {
         ResultIterator(inner)
     }
-    // XXX into_inner
+
+    /// Extracts the `CleanupIterator` inside.
+    pub fn into_inner(self) -> I {
+        self.0
+    }
 }
 
 impl<I, E, S: Stream<Item = I, Error = E>> Iterator for ResultIterator<CleanupIterator<S>> {
@@ -69,9 +109,17 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for ResultIterator<CleanupIt
     }
 }
 
+/// A future that extracts one item from a stream.
+///
+/// This is the future returned from
+/// [`CoroutineStream::extractor`](../prelude/trait.CoroutineStream.html#method.extractor). It
+/// borrows the stream mutably and allows taking one item out of it.
+///
+/// Unlike `Stream::into_future`, this does not consume the stream.
 pub struct StreamExtractor<'a, S: 'a>(&'a mut S);
 
 impl<'a, S: 'a> StreamExtractor<'a, S> {
+    /// A constructor.
     pub fn new(stream: &'a mut S) -> Self {
         StreamExtractor(stream)
     }
@@ -85,6 +133,10 @@ impl<'a, I, E, S: Stream<Item = I, Error = E> + 'a> Future for StreamExtractor<'
     }
 }
 
+/// A future sending a sequence of items into a sink.
+///
+/// This borrows a sink and sends the provided items (from an iterator) into it. It is returned by
+/// [`CoroutineSink::coro_sender`](../prelude/trait.CoroutineSink.html#method.coro_sender).
 pub struct SinkSender<'a, V, S: 'a, I: Iterator<Item = V>> {
     sink: &'a mut S,
     iter: Option<I>,
@@ -92,6 +144,7 @@ pub struct SinkSender<'a, V, S: 'a, I: Iterator<Item = V>> {
 }
 
 impl<'a, V, S: 'a, I: Iterator<Item = V>> SinkSender<'a, V, S, I> {
+    /// A constructor.
     pub fn new<Src: IntoIterator<IntoIter = I, Item = V>>(sink: &'a mut S, src: Src) -> Self {
         let iter = src.into_iter();
         Self {
@@ -100,6 +153,7 @@ impl<'a, V, S: 'a, I: Iterator<Item = V>> SinkSender<'a, V, S, I> {
             value: None,
         }
     }
+
     // Pull the next value from somewhere.
     fn next(&mut self) -> Option<V> {
         // A postponed value
@@ -148,6 +202,8 @@ mod tests {
     use futures::stream;
     use futures::sync::mpsc;
     use tokio_core::reactor::Core;
+
+    use prelude::*;
 
     /// Test getting things out of a stream one by one.
     ///
