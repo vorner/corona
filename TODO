@@ -8,4 +8,5 @@
 * Spawn one future per coroutine (possibly lazily) that just delegates to
   whatever is being waited on right now instead of spawning one for every
   waited thing. Challeng: how to resolve it once the coroutine ends?
-* Update README
+* Can we catch panics in the coro_wait and such, so it kills the coroutine but
+  not the reactor?
