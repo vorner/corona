@@ -12,7 +12,7 @@
 //! [`futures`](https://crates.io/crates/futures). They have some good properties, but some tasks
 //! are more conveniently done in a more imperative way.
 //!
-//! There's the work in progress of [async-away](https://github.com/alexcrichton/futures-await).
+//! There's the work in progress of [async-await](https://github.com/alexcrichton/futures-await).
 //! But it requires nightly, provides stack-less coroutines (which means the asynchronous waiting
 //! can be done in a top-level function only) and there are too many `'static` bounds.
 //!
