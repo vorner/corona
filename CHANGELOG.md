@@ -1,4 +1,4 @@
-# 3.0
+# 0.3.0
 
 Redesign of the API. The async context is implicit in thread local storage. The
 interface is easier to work with and looks cleaner, at the cost of checking some
