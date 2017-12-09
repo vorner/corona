@@ -23,3 +23,4 @@ tokio-core = "~0.1"
 [dev-dependencies]
 tokio-io = "~0.1"
 bytes = "~0.4"
+version-sync = "~0.5"
