@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/corona/0.3.0/corona/")]
+#![doc(html_root_url = "https://docs.rs/corona/0.3.1/corona/")]
 #![warn(missing_docs)]
 
 //! A library combining futures and coroutines.
@@ -100,6 +100,12 @@
 //!
 //! There are waiting methods that return an error instead of panicking, but they are less
 //! convenient to use.
+//!
+//! # Pitfalls
+//!
+//! If the coroutine is created with default configuration, it gets really small stack. If you
+//! overflow it, you get a segfault (it happens more often on debug builds than release ones) with
+//! really useless backtrace. Try making the stack bigger in that case.
 //!
 //! # API Stability
 //!

@@ -1,3 +1,8 @@
+# 0.3.1
+
+* Made the `Coroutine::new()` builder more ergonomic to use.
+* Documentation hint about stack sizes.
+
 # 0.3.0
 
 Redesign of the API. The async context is implicit in thread local storage. The
