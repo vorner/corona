@@ -59,7 +59,7 @@ fn iter_ok() {
 /// Stream with multiple elements, some errors. This one terminates at the first error.
 #[test]
 fn iter_ok_many() {
-    Cor::new().cor_ft(|| stream::iter(vec![Ok(42), Err(()), Ok(100)]).iter_ok().sum());
+    Cor::new().cor_ft(|| stream::iter_result(vec![Ok(42), Err(()), Ok(100)]).iter_ok().sum());
 }
 
 /// A stream with multiple elements, some errors. This one *skips* errors.
@@ -67,7 +67,7 @@ fn iter_ok_many() {
 fn iter_result() {
     Cor::new()
         .cor_ft(|| {
-            stream::iter(vec![Ok(12), Err(()), Ok(30)])
+            stream::iter_result(vec![Ok(12), Err(()), Ok(30)])
                 .iter_result()
                 .filter_map(Result::ok)
                 .sum()
