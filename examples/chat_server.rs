@@ -68,7 +68,7 @@ fn handle_connection(handle: &Handle,
     let writer = FramedWrite::new(output, LineEncoder);
     clients.borrow_mut().push(writer);
     let input = BufReader::new(input);
-    Coroutine::with_defaults(handle.clone(), move || {
+    Coroutine::new(handle.clone()).stack_size(32_768).spawn(move || {
         // If there's an error, kill the current coroutine. That one is not waited on and the
         // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
         // coroutines act.
@@ -79,7 +79,7 @@ fn handle_connection(handle: &Handle,
             msgs.coro_send(line).expect("The broadcaster suddenly disappeared");
         }
         eprintln!("A connection terminated");
-    });
+    }).expect("Wrong stack size");
 }
 
 fn broadcaster(msgs: Receiver<String>, clients: &Clients) {

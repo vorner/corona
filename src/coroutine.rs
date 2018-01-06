@@ -114,8 +114,9 @@ impl Coroutine {
     /// # Parameters
     ///
     /// * `size`: The stack size to use for newly spawned coroutines.
-    pub fn stack_size(&mut self, size: usize) {
+    pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
+        self
     }
 
     /// Spawns a coroutine directly.
@@ -188,9 +189,9 @@ impl Coroutine {
     /// # fn main() {
     /// let mut core = Core::new().unwrap();
     ///
-    /// let mut builder = Coroutine::new(core.handle());
-    /// builder.stack_size(40960);
-    /// let coroutine = builder.spawn(|| { }).unwrap();
+    /// let coroutine = Coroutine::new(core.handle())
+    ///     .stack_size(40_960)
+    ///     .spawn(|| { }).unwrap();
     ///
     /// core.run(coroutine).unwrap();
     /// # }
