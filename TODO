@@ -1,12 +1,48 @@
+# Docs
+
+* Pros, cons, compromises, what it's for and what isn't
+  - Point out there are many cases when the async isn't bottleneck.
 * More examples
-* Look at the unwind safety and unwinding in general.
-* Something like select
+  - Including comparison with other methods, like threads, plain futures, futures-await, etc.
+* A blog post, comparing and a case study
+
+# Panicking/unwinding
+
+* The default spawn should expect unwind safe things. Provide spawn_unwind_safe
+  or something.
+* Catch unwinds from within the waited-on coroutines, and propagate them back
+  to the coroutine, instead of killing the core (there's a future modifier for
+  that)
+* leak_on_panic support (currently, if the core is dropped because of a panic,
+  the double-panics inside the coroutines cause abort, allow leaking in such
+  case).
+
+# Interface
+
+* Something like select?
 * Wait for future with timeout?
-* Can we rely on *any* future executor?
 * Iterator that leaves the rest there on break
-* leak_on_panic support
-* Spawn one future per coroutine (possibly lazily) that just delegates to
-  whatever is being waited on right now instead of spawning one for every
-  waited thing. Challeng: how to resolve it once the coroutine ends?
-* Can we catch panics in the coro_wait and such, so it kills the coroutine but
-  not the reactor?
+* Scoped spawns (so the data passed inside the closure don't have to be
+  'static). Maybe call it join?
+* Accept None as handle and spawn our own. Or, allow even others executors.
+* Access to the builder that created this coroutine, so we can spawn with the
+  same config (and provide default if we're not inside a coroutine)? This could
+  be handy for libraries.
+
+# Threads
+
+It's impossible to do proper N:M threading scheme in Rust (or it seems). But it
+*is* possible to pick a thread at coroutine creation and let it live its whole
+life there.
+
+There are questions, though:
+
+* We probably want to have this as feature gate. Do we want to provide „dummy“
+  implementation that doesn't go into background thread if not enabled?
+* What is the preferred way? Have our own thread pool for coroutines, with
+  lazily (or configurable-started) threads, and using thread futures-cpupool
+  for the futures we wait for? Or have a core (or another executor) in each of
+  the threads to place them there?
+* Have a one, global pool or something like per-builder?
+* Automatically send waited-on coroutines to the futures-cpupool if they're
+  send?
