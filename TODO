@@ -28,6 +28,7 @@
 * Access to the builder that created this coroutine, so we can spawn with the
   same config (and provide default if we're not inside a coroutine)? This could
   be handy for libraries.
+* Include some logging.
 
 # Threads
 
@@ -46,3 +47,28 @@ There are questions, though:
 * Have a one, global pool or something like per-builder?
 * Automatically send waited-on coroutines to the futures-cpupool if they're
   send?
+
+# Misc
+
+* Make the waits without allocating
+  - Have a (handle-local) `FuturesUnordered`
+  - Each coroutine pre-allocates one future in there.
+  - The content may be either empty (the coroutine isn't waiting on anything),
+    a pointer to the actual waited-on future (on the coroutine's stack) or Done,
+    at which point it'll resolve.
+  - We need to switch the content and notify it when needed.
+  - There are some challenges with ensuring we know pointers both way and that
+    nothing gets used after freeing. If possible without too many levels of
+    indirection. Maybe something could be allocated at the bottom of the
+    coroutine's stack?
+
+# Tests
+
+* More cores on the same thread, switching between them and killing some of the
+  threads as it goes.
+* Does it make sense to do some kind of fuzzying? How would that work, spawning
+  random coroutines that randomly do something and yield?
+* Benchmark how fast (or slow) the thing is, and copare to futures-only and
+  futures-await scenarios.
+  - There may be use cases where this is actually faster, because a lot of the
+    above needs `'static` bounds.

@@ -14,6 +14,7 @@ license = "Apache-2.0/MIT"
 [badges]
 travis-ci = { repository = "vorner/corona" }
 appveyor = { repository = "vorner/corona" }
+maintenance = { status = "actively-developed" }
 
 [dependencies]
 context = "~2"
