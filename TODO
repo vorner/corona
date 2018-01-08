@@ -29,6 +29,9 @@
   same config (and provide default if we're not inside a coroutine)? This could
   be handy for libraries.
 * Include some logging.
+* Make „eagerness“ of start of the coroutine configurable (eg. do we schedule
+  it to run later on, or execute it right await and stop the parent while it's
+  running).
 
 # Threads
 
