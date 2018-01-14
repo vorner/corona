@@ -1,7 +1,5 @@
 # Docs
 
-* Pros, cons, compromises, what it's for and what isn't
-  - Point out there are many cases when the async isn't bottleneck.
 * More examples
   - Including comparison with other methods, like threads, plain futures, futures-await, etc.
 * A blog post, comparing and a case study

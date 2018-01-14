@@ -3,18 +3,27 @@
 [![Travis Build Status](https://api.travis-ci.org/vorner/corona.png?branch=master)](https://travis-ci.org/vorner/corona)
 [![AppVeyor Build status](https://ci.appveyor.com/api/projects/status/ygytb97bion810ru/branch/master?svg=true)](https://ci.appveyor.com/project/vorner/corona/branch/master)
 
-Stackfull coroutines in Rust, integrating well with
-[futures](https://crates.io/crates/futures).
+When you need to get the asynchronous out of the way.
 
-This is often more convenient than using just futures or
-[futures-await](https://github.com/alexcrichton/futures-await) (and works on
-stable). But it comes with a runtime cost.
+Corona is a library providing stackful coroutines for Rust. They integrate well
+with futures ‒ it is possible to switch between the abstractions as needed, each
+coroutine is also a future and a coroutine can wait for a future to complete.
+Furthermore, the futures don't have to be `'static`.
+
+On the other hand, there's a runtime cost to the library. The performance does
+not necessarily suffer (that yet needs to be measured, but the fact a future
+doesn't need to own its data may actually make it *faster*). But each coroutine
+has its own stack, which takes memory.
 
 You want to read the [docs](https://docs.rs/corona) and examine the
 [examples](https://github.com/vorner/corona/tree/master/examples).
 
-When you try it out, I'm interested in hearing some feedback (if it works for
-you, if the API could be improved somehow).
+# Status
+
+I hope to stabilize the API soon. But I want to write some more examples and
+experiments first.
+
+If you use it for something, I want to hear about it.
 
 ## License
 

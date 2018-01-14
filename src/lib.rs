@@ -13,22 +13,26 @@
 //! are more conveniently done in a more imperative way.
 //!
 //! There's the work in progress of [async-await](https://github.com/alexcrichton/futures-await).
-//! But it requires nightly, provides stack-less coroutines (which means the asynchronous waiting
-//! can be done in a top-level function only) and there are too many `'static` bounds.
+//! But it requires nightly (for now), provides stack-less coroutines (which means the asynchronous
+//! waiting can be done in a top-level function only) and there are too many `'static` bounds.
 //!
 //! This library brings a more convenient interface. However, it comes with a run-time cost, so you
-//! might want to consider if you prefer ease of development or speed of execution. Often, the
+//! might want to consider if you prefer ease of development or memory efficiency. Often, the
 //! asynchronous communication isn't the bottleneck and you won't be handling millions of
 //! concurrent connections, so this might be OK.
 //!
-//! # The cost
+//! # Pros
 //!
-//! First, each coroutine needs its own stack. A future or a generator (the thing behind the
-//! `futures-await` crate) is just an ordinary structure. The stacks take more memory and take
-//! longer to set up (this is mitigated a bit by caching the stacks).
+//! * Easier to use than futures.
+//! * Can integrate with futures.
+//! * Allows working with borrowed futures.
+//! * Provides safe interface.
 //!
-//! Each asynchronous wait contains a dynamic dispatch and an allocation (it might be possible to
-//! get rid of the second in the future).
+//! # Cons
+//!
+//! * Each coroutine needs its own stack, which is at least few memory pages large. This makes the
+//!   library unsuitable when there are many concurrent coroutines.
+//! * The coroutines can't move between threads once created safely.
 //!
 //! # How to use
 //!
