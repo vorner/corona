@@ -1,3 +1,6 @@
+* The `spawn` method no longer catches panic by default. The
+  `spawn_catch_panic`.
+
 # 0.3.1
 
 * Made the `Coroutine::new()` builder more ergonomic to use.

@@ -32,18 +32,28 @@ impl Display for Dropped {
 #[derive(Debug)]
 pub enum TaskFailed {
     /// There was a panic inside the coroutine.
+    ///
+    /// The coroutine panicked and it was spawned with
+    /// [`spawn_catch_panic`](../coroutine/struct.Coroutine.html#method.spawn_catch_panic).
     Panicked(Box<Any + Send + 'static>),
+    /// There was a panic in the coroutine.
+    ///
+    /// However, the panic got re-established inside the coroutine's caller. Observing this result
+    /// is rare, since usually the propagated panic destroyes the owner of the coroutine as well.
+    PanicPropagated,
     /// The coroutine was lost.
     ///
     /// This can happen in case the `tokio_core::reactor::Core` the coroutine was spawned onto was
     /// dropped before the coroutine completed.
+    ///
+    /// Technically, the coroutine panicked, but this special panic is handled differently.
     Lost,
 }
 
 impl Error for TaskFailed {
     fn description(&self) -> &str {
         match *self {
-            TaskFailed::Panicked(_) => "The coroutine panicked",
+            TaskFailed::Panicked(_) | TaskFailed::PanicPropagated => "The coroutine panicked",
             TaskFailed::Lost => "The coroutine was lost",
         }
     }

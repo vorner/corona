@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::mem;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
 use context::Context;
 use context::stack::{Stack, ProtectedFixedSizeStack};
@@ -16,6 +16,8 @@ use switch::{Switch, WaitTask};
 
 enum TaskResult<R> {
     Panicked(Box<Any + Send + 'static>),
+    PanicPropagated,
+    Lost,
     Finished(R),
 }
 
@@ -32,10 +34,11 @@ impl<R> Future for CoroutineResult<R> {
     type Error = TaskFailed;
     fn poll(&mut self) -> Poll<R, TaskFailed> {
         match self.receiver.poll() {
-            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
-            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
             Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(_) => Err(TaskFailed::Lost),
+            Ok(Async::Ready(TaskResult::Finished(result))) => Ok(Async::Ready(result)),
+            Ok(Async::Ready(TaskResult::Panicked(reason))) => Err(TaskFailed::Panicked(reason)),
+            Ok(Async::Ready(TaskResult::PanicPropagated)) => Err(TaskFailed::PanicPropagated),
+            Ok(Async::Ready(TaskResult::Lost)) | Err(_) => Err(TaskFailed::Lost),
         }
     }
 }
@@ -61,7 +64,6 @@ thread_local! {
 pub struct Coroutine {
     handle: Handle,
     stack_size: usize,
-    leak_on_panic: bool,
 }
 
 impl Coroutine {
@@ -97,7 +99,6 @@ impl Coroutine {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
-            leak_on_panic: false,
         }
     }
 
@@ -163,6 +164,49 @@ impl Coroutine {
         Coroutine::new(handle).spawn(task).unwrap()
     }
 
+    /// The inner workings of `spawn` and `spawn_catch_panic`.
+    fn spawn_inner<R, Task>(&self, task: Task, propagate_panic: bool)
+        -> Result<CoroutineResult<R>, StackError>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + UnwindSafe + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+
+        let handle = self.handle.clone();
+
+        let perform = move |context, stack| {
+            let my_context = CoroutineContext {
+                handle,
+                parent_context: context,
+                stack,
+            };
+            CONTEXTS.with(|c| c.borrow_mut().push(my_context));
+            let mut panic_result = None;
+            let result = match panic::catch_unwind(AssertUnwindSafe(task)) {
+                Ok(res) => TaskResult::Finished(res),
+                Err(panic) => {
+                    if panic.is::<Dropped>() {
+                        TaskResult::Lost
+                    } else if propagate_panic {
+                        panic_result = Some(panic);
+                        TaskResult::PanicPropagated
+                    } else {
+                        TaskResult::Panicked(panic)
+                    }
+                },
+            };
+            // We are not interested in errors. They just mean the receiver is no longer
+            // interested, which is fine by us.
+            drop(sender.send(result));
+            let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
+            (my_context.parent_context, my_context.stack, panic_result)
+        };
+        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)))?;
+
+        Ok(CoroutineResult { receiver })
+    }
+
     /// Spawns a coroutine with configuration from the builder.
     ///
     /// This spawns a new coroutine with the values previously set in the builder.
@@ -196,35 +240,35 @@ impl Coroutine {
     /// core.run(coroutine).unwrap();
     /// # }
     /// ```
+    ///
+    /// # Panic handling
+    ///
+    /// If the coroutine panics, the panic is propagated. This usually means the `core.run`, unless
+    /// the panic happens before the first suspension point, in which case it is the `spawn` itself
+    /// which panics.
     pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
     where
         R: 'static,
         Task: FnOnce() -> R + 'static,
     {
-        let (sender, receiver) = oneshot::channel();
+        // That AssertUnwindSafe is OK. We just pause the panic, teleport it to the callers thread
+        // and then let it continue.
+        self.spawn_inner(AssertUnwindSafe(task), true)
+    }
 
-        let handle = self.handle.clone();
-
-        let perform = move |context, stack| {
-            let my_context = CoroutineContext {
-                handle,
-                parent_context: context,
-                stack,
-            };
-            CONTEXTS.with(|c| c.borrow_mut().push(my_context));
-            let result = match panic::catch_unwind(AssertUnwindSafe(task)) {
-                Ok(res) => TaskResult::Finished(res),
-                Err(panic) => TaskResult::Panicked(panic),
-            };
-            // We are not interested in errors. They just mean the receiver is no longer
-            // interested, which is fine by us.
-            drop(sender.send(result));
-            let my_context = CONTEXTS.with(|c| c.borrow_mut().pop().unwrap());
-            (my_context.parent_context, my_context.stack)
-        };
-        Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)))?;
-
-        Ok(CoroutineResult { receiver })
+    /// Spawns a coroutine, preventing the panics in it from killing the parent task.
+    ///
+    /// This is just like [spawn](#method.spawn), but any panic in the coroutine is captured and
+    /// returned through the result instead of propagating.
+    ///
+    /// Note that you need to ensure the `task` is [unwind
+    /// safe](https://doc.rust-lang.org/std/panic/trait.UnwindSafe.html) for that reason.
+    pub fn spawn_catch_panic<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + UnwindSafe + 'static,
+    {
+        self.spawn_inner(task, false)
     }
 
     /// Waits for completion of a future.
@@ -391,15 +435,34 @@ mod tests {
 
     /// The panic doesn't kill the main thread, but is reported.
     #[test]
-    fn panics() {
+    fn panics_catch() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
-        match core.run(Coroutine::with_defaults(handle, || panic!("Test"))) {
+        match core.run(Coroutine::new(handle).spawn_catch_panic(|| panic!("Test")).unwrap()) {
             Err(TaskFailed::Panicked(_)) => (),
             _ => panic!("Panic not reported properly"),
         }
         let handle = core.handle();
         assert_eq!(42, core.run(Coroutine::with_defaults(handle, || 42)).unwrap());
+    }
+
+    /// However, normal coroutines do panic.
+    #[test]
+    #[should_panic]
+    fn panics_spawn() {
+        let core = Core::new().unwrap();
+        let _ = Coroutine::new(core.handle()).spawn(|| panic!("Test"));
+    }
+
+    /// This one panics and the panic is propagated, but after suspension point it is out of run.
+    #[test]
+    fn panics_run() {
+        let mut core = Core::new().unwrap();
+        let coroutine = Coroutine::with_defaults(core.handle(), || {
+                let _ = Coroutine::wait(future::ok::<(), ()>(()));
+                panic!("Test");
+            });
+        panic::catch_unwind(AssertUnwindSafe(|| core.run(coroutine))).unwrap_err();
     }
 
     /// It's impossible to wait on a future outside of a coroutine

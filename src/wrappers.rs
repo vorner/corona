@@ -6,6 +6,8 @@
 //!
 //! Despite that, they still can be created and used directly if the need arises.
 
+use std::panic;
+
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 
 use prelude::CoroutineFuture;
@@ -52,6 +54,10 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for CleanupIterator<S> {
     }
 }
 
+fn drop_panic<T>(r: Result<T, Dropped>) -> T {
+    r.unwrap_or_else(|_| panic::resume_unwind(Box::new(Dropped)))
+}
+
 /// An iterator returned from
 /// [`CoroutineStream::iter_ok`](../prelude/trait.CoroutineStream.html#method.iter_ok).
 ///
@@ -76,7 +82,7 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for OkIterator<CleanupIterat
     fn next(&mut self) -> Option<I> {
         self.0
             .next()
-            .map(Result::unwrap)
+            .map(drop_panic)
             .and_then(Result::ok)
     }
 }
@@ -105,7 +111,7 @@ impl<I, E, S: Stream<Item = I, Error = E>> Iterator for ResultIterator<CleanupIt
     fn next(&mut self) -> Option<Result<I, E>> {
         self.0
             .next()
-            .map(Result::unwrap)
+            .map(drop_panic)
     }
 }
 

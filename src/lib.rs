@@ -79,12 +79,16 @@
 //! * All the coroutine-aware methods panic outside of a coroutine.
 //! * You can freely mix future and coroutine approach. Therefore, you can use combinators to build
 //!   a future and then `coro_wait` on it.
-//! * Panicking inside a coroutine is OK. Its future will resolve with an error, similar to
-//!   joining a thread.
+//! * A coroutine spawned by [`spawn`](coroutine/struct.Coroutine.html#method.spawn) or
+//!   [`with_defaults`](coroutine/struct.Coroutine.html#method.with_defaults) will propagate panics
+//!   outside. One spawned with
+//!   [`spawn_catch_panic`](coroutine/struct.Coroutine.html#method.spawn_catch_panic) captures the
+//!   panic and passes it on through its result.
 //! * Panicking outside of the coroutine where the reactor runs may lead to ugly things, like
 //!   aborting the program (this'd usually lead to a double panic).
 //! * Any of the waiting methods may switch to a different coroutine. Therefore it is not a good
-//!   idea to hold a `RefCell` borrowed around that if another coroutine could also borrow it.
+//!   idea to hold a `RefCell` borrowed or a `Mutex` locked around that if another coroutine could
+//!   also borrow it.
 //!
 //! The new methods are here:
 //!
@@ -113,11 +117,10 @@
 //!
 //! # API Stability
 //!
-//! The API is still being experimented with. Things might change. If you want to help reach
-//! stability, try it out and provide feedback.
+//! The API is likely to get stabilized soon (I hope it won't change any more). But I still  want
+//! to do more experimentation before making it official.
 //!
-//! However, it is probably useful already and I won't do breaking changes in a patch version
-//! update.
+//! Other experiments are also welcome.
 //!
 //! # Known problems
 //!
@@ -125,14 +128,15 @@
 //!
 //! * Many handy abstractions are still missing, like waiting for a future with a timeout, or
 //!   conveniently waiting for a first of a set of futures or streams.
-//! * Relation to unwind safety is unclear.
+//! * A global configuration for the whole coroutine to leak on panic might be a convenient
+//!   solution.
 //! * The coroutines can't move between threads. This is likely impossible, since Rust's type
 //!   system doesn't expect whole stacks with all local data to move.
 //! * It relies on Tokio. This might change after the Tokio reform.
 //! * The API doesn't prevent some footguns ‒ leaving a `RefCell` borrowed across coroutine switch,
 //!   deadlocking, calling the waiting methods outside of a coroutine or using `.wait()` by a
 //!   mistake and blocking the whole thread. These manifest during runtime.
-//! * The cleaning up of coroutines whet the reactor is dropped is done through panics.
+//! * The cleaning up of coroutines when the reactor is dropped is done through panics.
 //!
 //! This is an example what *will* deadlock (eg. don't do this):
 //!

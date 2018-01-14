@@ -1,5 +1,8 @@
 //! Module for the low-level switching of coroutines
 
+use std::any::Any;
+use std::panic;
+
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Future, Poll};
@@ -10,11 +13,18 @@ use stack_cache;
 
 /// A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
 pub(crate) trait BoxableTask {
-    fn perform(&mut self, Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack);
+    fn perform(&mut self, Context, ProtectedFixedSizeStack) ->
+        (Context, ProtectedFixedSizeStack, Option<Box<Any + Send>>);
 }
 
-impl<F: FnOnce(Context, ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack)> BoxableTask for Option<F> {
-    fn perform(&mut self, context: Context, stack: ProtectedFixedSizeStack) -> (Context, ProtectedFixedSizeStack) {
+impl<F> BoxableTask for Option<F>
+where
+    F: FnOnce(Context, ProtectedFixedSizeStack) ->
+        (Context, ProtectedFixedSizeStack, Option<Box<Any + Send>>),
+{
+    fn perform(&mut self, context: Context, stack: ProtectedFixedSizeStack) ->
+        (Context, ProtectedFixedSizeStack, Option<Box<Any + Send>>)
+    {
         self.take().unwrap()(context, stack)
     }
 }
@@ -62,9 +72,12 @@ fn coroutine_internal(transfer: Transfer) -> (Switch, Context) {
     let switch = Switch::extract(transfer.data);
     let result = match switch {
         Switch::StartTask { stack, mut task } => {
-            let (ctx, stack) = task.perform(context, stack);
+            let (ctx, stack, panic) = task.perform(context, stack);
             context = ctx;
-            Switch::Destroy { stack }
+            Switch::Destroy {
+                stack,
+                panic,
+            }
         },
         _ => panic!("Invalid switch instruction on coroutine entry"),
     };
@@ -106,6 +119,8 @@ pub(crate) enum Switch {
     /// Get rid of the sending coroutine, it terminated.
     Destroy {
         stack: ProtectedFixedSizeStack,
+        /// In case the coroutine panicked and the panic should continue.
+        panic: Option<Box<Any + Send>>,
     },
 }
 
@@ -165,9 +180,12 @@ impl Switch {
         let (reply, context) = self.exchange(context);
         use self::Switch::*;
         match reply {
-            Destroy { stack } => {
+            Destroy { stack, panic } => {
                 drop(context);
                 stack_cache::put(stack);
+                if let Some(panic) = panic {
+                    panic::resume_unwind(panic);
+                }
             },
             WaitFuture { mut task } => {
                 task.context = Some(context);
@@ -203,7 +221,7 @@ mod tests {
         let called_cp = called.clone();
         let task = move |context, stack| {
             called_cp.set(true);
-            (context, stack)
+            (context, stack, None)
         };
         Switch::run_new_coroutine(40960, Box::new(Some(task))).unwrap();
         assert!(called.get());
