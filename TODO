@@ -9,9 +9,6 @@
 
 * Make sure panic inside of a future is propagated into the coroutine that
   called it.
-* leak_on_panic support (currently, if the core is dropped because of a panic,
-  the double-panics inside the coroutines cause abort, allow leaking in such
-  case).
 * Coroutine::scoped & Coroutine::main
 
 # Interface

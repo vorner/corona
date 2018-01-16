@@ -50,6 +50,8 @@ struct CoroutineContext {
     parent_context: Context,
     /// Our own stack. We keep ourselvel alive.
     stack: ProtectedFixedSizeStack,
+    /// Do we want to leak this coroutine if the core is dropped due to a panic?
+    leak_on_panic: bool,
 }
 
 thread_local! {
@@ -64,6 +66,7 @@ thread_local! {
 pub struct Coroutine {
     handle: Handle,
     stack_size: usize,
+    leak_on_panic: bool,
 }
 
 impl Coroutine {
@@ -99,6 +102,7 @@ impl Coroutine {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
+            leak_on_panic: false,
         }
     }
 
@@ -117,6 +121,27 @@ impl Coroutine {
     /// * `size`: The stack size to use for newly spawned coroutines.
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
+        self
+    }
+
+    /// Leak coroutines instead of double-panicking.
+    ///
+    /// A coroutine whose core has been dropped is usually cleaned up by panicking inside the
+    /// coroutine. However, if the core has been dropped because the main coroutine panicked,
+    /// this'd lead to a double-panic, terminating the application.
+    ///
+    /// This allows *not* cleaning the coroutines in such case. In such situation, the stack itself
+    /// is released, but the destructors of objects on the stack are not, possibly leaking
+    /// resources.
+    ///
+    /// Other options to handling this is to use the `cleanup` methods for waiting (these return
+    /// result and it is up to the code to handle the cleanup manually), or using the
+    /// [`Coroutine::main`](#method.main) to start all the coroutines.
+    ///
+    /// Note that if a coroutine is leaked, its result future currently never resolves. This may
+    /// change in the future (then it would return `TaskFailed::Lost`).
+    pub fn leak_on_panic(&mut self, leak: bool) -> &mut Self {
+        self.leak_on_panic = leak;
         self
     }
 
@@ -174,12 +199,14 @@ impl Coroutine {
         let (sender, receiver) = oneshot::channel();
 
         let handle = self.handle.clone();
+        let leak_on_panic = self.leak_on_panic;
 
         let perform = move |context, stack| {
             let my_context = CoroutineContext {
                 handle,
                 parent_context: context,
                 stack,
+                leak_on_panic,
             };
             CONTEXTS.with(|c| c.borrow_mut().push(my_context));
             let mut panic_result = None;
@@ -343,6 +370,7 @@ impl Coroutine {
                     Err(err) => Err(err),
                 };
                 let result = res_ref as *mut Option<Result<I, E>>;
+                // Inject the result inside the place on the stack.
                 unsafe { *result = Some(res) };
                 Ok(Async::Ready(()))
             };
@@ -352,22 +380,26 @@ impl Coroutine {
                 poll: Some(unsafe { mem::transmute::<_, &'static mut _>(p) }),
                 context: None,
                 handle,
+                leak_on_panic: my_context.leak_on_panic,
+                stack: Some(my_context.stack),
             };
             let instruction = Switch::WaitFuture { task };
             instruction.exchange(my_context.parent_context)
         };
+        let (result, stack) = match reply_instruction {
+            Switch::Resume { stack } => (Ok(result.unwrap()), stack),
+            Switch::Cleanup { stack } => (Err(Dropped), stack),
+            _ => unreachable!("Invalid instruction on wakeup"),
+        };
+        // Reconstruct our context anew after we switched back.
         let new_context = CoroutineContext {
             parent_context: context,
-            stack: my_context.stack,
+            stack: stack,
             handle: my_context.handle,
+            leak_on_panic: my_context.leak_on_panic,
         };
         CONTEXTS.with(|c| c.borrow_mut().push(new_context));
-        match reply_instruction {
-            Switch::Resume => (),
-            Switch::Cleanup => return Err(Dropped),
-            _ => unreachable!("Invalid instruction on wakeup"),
-        }
-        Ok(result.unwrap())
+        result
     }
 }
 
@@ -470,5 +502,33 @@ mod tests {
     #[should_panic]
     fn panic_without_coroutine() {
         drop(Coroutine::wait(future::ok::<_, ()>(42)));
+    }
+
+    /// Tests leaking instead of double-panicking. This is tested simply by the tests not crashing
+    /// hard.
+    #[test]
+    fn panic_leak() {
+        let core = Core::new().unwrap();
+        let _coroutine = Coroutine::new(core.handle())
+            .leak_on_panic(true)
+            .spawn(|| {
+                let _ = Coroutine::wait(future::empty::<(), ()>());
+                panic!("Should never get here!");
+            })
+            .unwrap();
+        panic::catch_unwind(AssertUnwindSafe(move || {
+                let _core = core;
+                panic!("Test");
+            }))
+            .unwrap_err();
+        /*
+         * FIXME: This doesn't work as intended. The sender gets leaked too, so it is never closed
+         * and we don't get the Lost case. Any way to make sure we get it?
+        if let Err(TaskFailed::Lost) = coroutine.wait() {
+            // OK, correct error
+        } else {
+            panic!("Coroutine didn't get lost correctly");
+        }
+        */
     }
 }

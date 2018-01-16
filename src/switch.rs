@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::panic;
+use std::thread;
 
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
@@ -35,7 +36,9 @@ type BoxedTask = Box<BoxableTask>;
 pub(crate) struct WaitTask {
     pub(crate) poll: Option<&'static mut FnMut() -> Poll<(), ()>>,
     pub(crate) context: Option<Context>,
+    pub(crate) stack: Option<ProtectedFixedSizeStack>,
     pub(crate) handle: Handle,
+    pub(crate) leak_on_panic: bool,
 }
 
 impl Future for WaitTask {
@@ -47,7 +50,10 @@ impl Future for WaitTask {
             Ok(Async::NotReady) => Ok(Async::NotReady),
             other => {
                 drop(self.poll.take());
-                Switch::Resume.run_child(self.context.take().unwrap());
+                Switch::Resume {
+                        stack: self.stack.take().unwrap()
+                    }
+                    .run_child(self.context.take().unwrap());
                 other
             }
         }
@@ -57,7 +63,15 @@ impl Future for WaitTask {
 impl Drop for WaitTask {
     fn drop(&mut self) {
         if let Some(context) = self.context.take() {
-            Switch::Cleanup.run_child(context);
+            if self.leak_on_panic && thread::panicking() {
+                // We leak all the things on the stack, but we get rid of the stack itself at least
+                // (by letting it disappear with us)
+                return;
+            }
+            Switch::Cleanup {
+                    stack: self.stack.take().expect("Taken stack, but not context?")
+                }
+                .run_child(context);
         }
     }
 }
@@ -113,9 +127,13 @@ pub(crate) enum Switch {
         task: WaitTask,
     },
     /// Continue operation, the future is resolved.
-    Resume,
+    Resume {
+        stack: ProtectedFixedSizeStack,
+    },
     /// Abort the coroutine and clean up the resources.
-    Cleanup,
+    Cleanup {
+        stack: ProtectedFixedSizeStack,
+    },
     /// Get rid of the sending coroutine, it terminated.
     Destroy {
         stack: ProtectedFixedSizeStack,

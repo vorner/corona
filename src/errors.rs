@@ -11,7 +11,7 @@ pub use context::stack::StackError;
 /// If you wait on a future and the corresponding executor gets destroyed before the future has a
 /// chance to run, this error is returned as there's no chance the future will ever get resolved.
 /// It is up to the waiter to clean up the stack, or use methods that panic implicitly.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Dropped;
 
 impl Error for Dropped {
