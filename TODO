@@ -59,8 +59,6 @@ There are questions, though:
 
 # Tests
 
-* More cores on the same thread, switching between them and killing some of the
-  threads as it goes.
 * Does it make sense to do some kind of fuzzying? How would that work, spawning
   random coroutines that randomly do something and yield?
 * Benchmark how fast (or slow) the thing is, and copare to futures-only and
