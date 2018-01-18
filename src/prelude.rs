@@ -44,7 +44,8 @@ pub trait CoroutineFuture: Sized {
     /// This'll panic if the reactor the coroutine was spawned onto is dropped while the method
     /// runs.
     ///
-    /// It also panics when called outside of the coroutine.
+    /// It also panics when called outside of the coroutine and any panics from the coroutine
+    /// itself will be propagated to the calling coroutine.
     ///
     /// # Examples
     ///
@@ -78,7 +79,8 @@ pub trait CoroutineFuture: Sized {
     ///
     /// # Panics
     ///
-    /// When called outside of the coroutine.
+    /// When called outside of the coroutine. Also, panics from within the future are propagated to
+    /// the calling (current) coroutine.
     fn coro_wait_cleanup(self) -> Result<Result<Self::Item, Self::Error>, Dropped>;
 }
 
@@ -117,7 +119,8 @@ pub trait CoroutineStream: Sized {
     /// If the reactor is dropped during the iteration, this method panics to clean up the
     /// coroutine.
     ///
-    /// It also panics when called from outside of a coroutine.
+    /// It also panics when called from outside of a coroutine. Panics from within the stream are
+    /// propagated into the calling coroutine.
     ///
     /// # Examples
     ///
@@ -170,7 +173,8 @@ pub trait CoroutineStream: Sized {
     ///
     /// This panics when the reactor the current coroutine runs on is dropped while iterating.
     ///
-    /// It panics when called outside of a coroutine.
+    /// It panics when called outside of a coroutine and any panics from within the stream are
+    /// propagated to the calling coroutine.
     ///
     /// # Examples
     ///
@@ -212,7 +216,7 @@ pub trait CoroutineStream: Sized {
     ///
     /// # Panics
     ///
-    /// If called outside of a coroutine.
+    /// If called outside of a coroutine, or if the stream itself panics internally.
     fn iter_cleanup(self) -> CleanupIterator<Self>;
 
     /// A future that pulls one item out of the stream.
@@ -261,7 +265,7 @@ pub trait CoroutineStream: Sized {
     ///
     /// It panics when the reactor is dropped while waiting for the item.
     ///
-    /// It also panics when called outside of a coroutine.
+    /// It also panics when called outside of a coroutine or when the stream itself panics.
     ///
     /// # Examples
     ///
@@ -300,7 +304,7 @@ pub trait CoroutineStream: Sized {
     ///
     /// # Panics
     ///
-    /// When called outside of a coroutine.
+    /// When called outside of a coroutine or when the stream itself panics.
     fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped>;
 }
 
@@ -343,7 +347,7 @@ pub trait CoroutineSink: Sized {
     ///
     /// If the reactor is dropped before the sending is done.
     ///
-    /// If it is called outside of a coroutine.
+    /// If it is called outside of a coroutine or if the sink panics internally.
     ///
     /// # Examples
     ///
@@ -378,7 +382,7 @@ pub trait CoroutineSink: Sized {
     ///
     /// # Panics
     ///
-    /// If it is called outside of a coroutine.
+    /// If it is called outside of a coroutine or if the sink itself panics.
     fn coro_send_cleanup(&mut self, item: Self::Item) -> Result<Result<(), Self::Error>, Dropped>;
 
     /// Sends multiple items into the sink.
@@ -393,7 +397,7 @@ pub trait CoroutineSink: Sized {
     ///
     /// # Panics
     ///
-    /// If it is called outside of a coroutine.
+    /// If it is called outside of a coroutine or if the sink panics internally.
     fn coro_send_many<Iter, I>(&mut self, iter: I) -> Result<Result<(), Self::Error>, Dropped>
     where
         Iter: Iterator<Item = Self::Item>,

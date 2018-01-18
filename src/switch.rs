@@ -1,7 +1,7 @@
 //! Module for the low-level switching of coroutines
 
 use std::any::Any;
-use std::panic;
+use std::panic::{self, AssertUnwindSafe};
 use std::thread;
 
 use context::{Context, Transfer};
@@ -46,16 +46,27 @@ impl Future for WaitTask {
     type Error = ();
     fn poll(&mut self) -> Poll<(), ()> {
         assert!(self.context.is_some());
-        match (self.poll.as_mut().unwrap())() {
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            other => {
+        // The catch unwind is fine ‒ we don't swallow the panic, only move it to the correct place
+        // ‒ so likely everything relevant will be dropped like with any other normal panic.
+        match panic::catch_unwind(AssertUnwindSafe(self.poll.as_mut().unwrap())) {
+            Ok(Ok(Async::NotReady)) => Ok(Async::NotReady),
+            Ok(result) => {
                 drop(self.poll.take());
                 Switch::Resume {
-                        stack: self.stack.take().unwrap()
+                        stack: self.stack.take().unwrap(),
                     }
                     .run_child(self.context.take().unwrap());
-                other
-            }
+                result
+            },
+            Err(panic) => {
+                drop(self.poll.take());
+                Switch::PropagateFuturePanic {
+                        stack: self.stack.take().unwrap(),
+                        panic
+                    }
+                    .run_child(self.context.take().unwrap());
+                Err(())
+            },
         }
     }
 }
@@ -123,8 +134,14 @@ pub(crate) enum Switch {
         stack: ProtectedFixedSizeStack,
         task: BoxedTask,
     },
+    /// Wait on a future to finish
     WaitFuture {
         task: WaitTask,
+    },
+    /// A future panicked, propagate it into the coroutine.
+    PropagateFuturePanic {
+        stack: ProtectedFixedSizeStack,
+        panic: Box<Any + Send>,
     },
     /// Continue operation, the future is resolved.
     Resume {

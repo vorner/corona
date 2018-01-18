@@ -1,3 +1,5 @@
+* A panic inside a future propagates to the owning coroutine, doesn't kill the
+  whole core.
 * The `spawn` method no longer catches panic by default. The
   `spawn_catch_panic`.
 

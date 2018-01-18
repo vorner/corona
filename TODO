@@ -7,8 +7,6 @@
 
 # Panicking/unwinding
 
-* Make sure panic inside of a future is propagated into the coroutine that
-  called it.
 * Coroutine::scoped & Coroutine::main
 
 # Interface

@@ -318,6 +318,8 @@ impl Coroutine {
     /// # Panics
     ///
     /// If called outside of a coroutine (there's nothing to suspend).
+    ///
+    /// Also, panics from withit the provided future are propagated into the calling coroutine.
     pub fn wait<I, E, Fut>(mut fut: Fut) -> Result<Result<I, E>, Dropped>
     where
         Fut: Future<Item = I, Error = E>,
@@ -387,8 +389,9 @@ impl Coroutine {
             instruction.exchange(my_context.parent_context)
         };
         let (result, stack) = match reply_instruction {
-            Switch::Resume { stack } => (Ok(result.unwrap()), stack),
-            Switch::Cleanup { stack } => (Err(Dropped), stack),
+            Switch::Resume { stack } => (Ok(Ok(result.unwrap())), stack),
+            Switch::Cleanup { stack } => (Ok(Err(Dropped)), stack),
+            Switch::PropagateFuturePanic { stack, panic } => (Err(panic), stack),
             _ => unreachable!("Invalid instruction on wakeup"),
         };
         // Reconstruct our context anew after we switched back.
@@ -399,7 +402,10 @@ impl Coroutine {
             leak_on_panic: my_context.leak_on_panic,
         };
         CONTEXTS.with(|c| c.borrow_mut().push(new_context));
-        result
+        match result {
+            Ok(result) => result,
+            Err(panic) => panic::resume_unwind(panic),
+        }
     }
 }
 
@@ -530,5 +536,30 @@ mod tests {
             panic!("Coroutine didn't get lost correctly");
         }
         */
+    }
+
+    /// A panic from inside the future doesn't kill the core, but falls out of the wait into the
+    /// responsible coroutine.
+    ///
+    /// We test this separately because the future is „exported“ to the main coroutine to be
+    /// polled. So we check it doesn't kill the core.
+    #[test]
+    fn panic_in_future() {
+        let mut core = Core::new().unwrap();
+        let coroutine = Coroutine::with_defaults(core.handle(), || {
+            struct PanicFuture;
+            impl Future for PanicFuture {
+                type Item = ();
+                type Error = ();
+                fn poll(&mut self) -> Poll<(), ()> {
+                    panic!("Test");
+                }
+            }
+
+            if let Ok(_) = panic::catch_unwind(|| Coroutine::wait(PanicFuture)) {
+                panic!("A panic should fall out of wait");
+            }
+        });
+        core.run(coroutine).unwrap();
     }
 }
