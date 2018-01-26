@@ -14,6 +14,7 @@
 
 extern crate corona;
 extern crate futures;
+extern crate futures_cpupool;
 extern crate test;
 extern crate tokio_core;
 extern crate tokio_io;
@@ -21,19 +22,23 @@ extern crate tokio_io;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream, TcpListener, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Barrier};
+use std::sync::mpsc;
 use std::thread;
 
 use corona::prelude::*;
 use futures::{stream, Future, Stream};
+use futures_cpupool::CpuPool;
 use tokio_core::net::TcpListener as TokioTcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::io;
 use test::Bencher;
 
-const EXCHANGES: usize = 5;
-const BUF_SIZE: usize = 64;
-const PARALLEL: usize = 128;
+const EXCHANGES: usize = 4;
+const BUF_SIZE: usize = 256;
+const PARALLEL: usize = 256;
 const WARMUP: usize = 10;
+const BATCH: usize = 10;
+const CLIENT_THREADS: usize = 8;
 
 /// Generates a socket address with the given port
 fn addr(port: u16) -> SocketAddr {
@@ -42,7 +47,7 @@ fn addr(port: u16) -> SocketAddr {
 
 /// The client side
 fn batter(port: u16) {
-    let mut streams = (0..PARALLEL).map(|_| {
+    let mut streams = (0..PARALLEL / CLIENT_THREADS).map(|_| {
             TcpStream::connect(&addr(port))
                 .unwrap()
         })
@@ -55,7 +60,6 @@ fn batter(port: u16) {
         }
         for stream in &mut streams {
             stream.read_exact(&mut output[..]).unwrap();
-            assert_eq!(input, output);
         }
     }
 }
@@ -68,15 +72,29 @@ fn batter(port: u16) {
 /// There's a short warm-up before the actual benchmark starts ‒ both to initialize whatever
 /// buffers or caches the library uses and to make sure the server already started after the
 /// barrier.
+///
+/// We run the clients in multiple threads (so the server is kept busy). To not start and stop a
+/// lot of client threads, we report the progress through a sync channel.
 fn bench<Body: FnOnce(Arc<Barrier>, u16) + Send + 'static>(b: &mut Bencher, port: u16, body: Body) {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_copy = Arc::clone(&barrier);
     thread::spawn(move || body(barrier_copy, port));
     barrier.wait();
-    for _ in 0..WARMUP {
-        batter(port);
+    let (sender, receiver) = mpsc::sync_channel(CLIENT_THREADS * 10);
+    for _ in 0..CLIENT_THREADS {
+        let sender = sender.clone();
+        thread::spawn(move || {
+            while let Ok(_) = sender.send(()) {
+                for _ in 0..BATCH {
+                    batter(port);
+                }
+            }
+        });
     }
-    b.iter(|| batter(port));
+    for _ in 0..WARMUP * CLIENT_THREADS {
+        receiver.recv().unwrap();
+    }
+    b.iter(move || receiver.recv().unwrap());
 }
 
 /// Our own corona.
@@ -153,6 +171,35 @@ fn futures(b: &mut Bencher) {
                     .map(|_| ())
                     .map_err(|e: std::io::Error| panic!("{}", e));
                 handle.spawn(perform);
+                Ok(())
+            });
+        started.wait();
+        core.run(main).unwrap();
+    });
+}
+
+/// Like `futures`, but uses cpu pool.
+#[bench]
+fn futures_cpupool(b: &mut Bencher) {
+    bench(b, 1237, |started, port| {
+        let mut core = Core::new().unwrap();
+        let pool = CpuPool::new_num_cpus();
+        let handle = core.handle();
+        let main = TokioTcpListener::bind(&addr(port), &handle)
+            .unwrap()
+            .incoming()
+            .for_each(move |(connection, _addr)| {
+                let buf = vec![0u8; BUF_SIZE];
+                let perform = stream::iter_ok(0..EXCHANGES)
+                    .fold((connection, buf), |(connection, buf), _i| {
+                        io::read_exact(connection, buf)
+                            .and_then(|(connection, buf)| io::write_all(connection, buf))
+                    })
+                    .map(|_| ());
+                let offloaded = pool.spawn(perform)
+                    .map(|_| ())
+                    .map_err(|e: std::io::Error| panic!("{}", e));
+                handle.spawn(offloaded);
                 Ok(())
             });
         started.wait();
