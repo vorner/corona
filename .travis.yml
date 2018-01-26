@@ -19,6 +19,7 @@ script:
       export CARGO_INCREMENTAL=1 &&
       cargo build &&
       cargo test &&
+      cargo test --release &&
       cargo doc --no-deps &&
       (test "$TRAVIS_RUST_VERSION" != nightly || cargo clippy -- --deny clippy)
 

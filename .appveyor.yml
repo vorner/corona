@@ -119,3 +119,4 @@ build: false
 # environment variable.
 test_script:
   - cargo test --verbose %cargoflags%
+  - cargo test --release --verbose %cargoflags%
