@@ -23,6 +23,7 @@ extern crate test;
 extern crate tokio_core;
 extern crate tokio_io;
 
+use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, SocketAddr};
 use std::sync::mpsc;
@@ -37,24 +38,35 @@ use tokio_core::reactor::Core;
 use tokio_io::io;
 use test::Bencher;
 
-const EXCHANGES: usize = 6;
 const BUF_SIZE: usize = 1024;
-const PARALLEL: usize = 512;
-const WARMUP: usize = 10;
-const BATCH: usize = 20;
-const CLIENT_THREADS: usize = 32;
-const SERVER_THREADS: usize = 4;
+
+fn get_var(name: &str, default: usize) -> usize {
+    env::var(name)
+        .map_err(|_| ())
+        .and_then(|s| s.parse().map_err(|_| ()))
+        .unwrap_or(default)
+}
+
+lazy_static! {
+    static ref POOL: CpuPool = CpuPool::new_num_cpus();
+    static ref PARALLEL: usize = get_var("PARALLEL", 512);
+    static ref EXCHANGES: usize = get_var("EXCHANGES", 6);
+    static ref WARMUP: usize = get_var("WARMUP", 10);
+    static ref BATCH: usize = get_var("BATCH", 20);
+    static ref CLIENT_THREADS: usize = get_var("CLIENT_THREADS", 32);
+    static ref SERVER_THREADS: usize = get_var("SERVER_THREADS", 4);
+}
 
 /// The client side
 fn batter(addr: SocketAddr) {
-    let mut streams = (0..PARALLEL / CLIENT_THREADS).map(|_| {
+    let mut streams = (0..*PARALLEL / *CLIENT_THREADS).map(|_| {
             TcpStream::connect(&addr)
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    let input = vec![1u8; BUF_SIZE];
-    let mut output = vec![0u8; BUF_SIZE];
-    for _ in 0..EXCHANGES {
+    let input = [1u8; BUF_SIZE];
+    let mut output = [0u8; BUF_SIZE];
+    for _ in 0..*EXCHANGES {
         for stream in &mut streams {
             stream.write_all(&input[..]).unwrap();
         }
@@ -79,19 +91,19 @@ fn bench(b: &mut Bencher, paral: usize, body: fn(TcpListener)) {
         let listener = listener.try_clone().unwrap();
         thread::spawn(move || body(listener));
     }
-    let (sender, receiver) = mpsc::sync_channel(CLIENT_THREADS * 10);
-    for _ in 0..CLIENT_THREADS {
+    let (sender, receiver) = mpsc::sync_channel(*CLIENT_THREADS * 10);
+    for _ in 0..*CLIENT_THREADS {
         let sender = sender.clone();
         let addr = addr.clone();
         thread::spawn(move || {
             while let Ok(_) = sender.send(()) {
-                for _ in 0..BATCH {
+                for _ in 0..*BATCH {
                     batter(addr);
                 }
             }
         });
     }
-    for _ in 0..WARMUP * CLIENT_THREADS {
+    for _ in 0..*WARMUP * *CLIENT_THREADS {
         receiver.recv().unwrap();
     }
     b.iter(move || receiver.recv().unwrap());
@@ -109,7 +121,7 @@ fn run_corona(listener: TcpListener) {
         for (mut connection, _address) in incoming {
             Coroutine::with_defaults(handle.clone(), move || {
                 let mut buf = [0u8; BUF_SIZE];
-                for _ in 0..EXCHANGES {
+                for _ in 0..*EXCHANGES {
                     io::read_exact(&mut connection, &mut buf[..])
                         .coro_wait()
                         .unwrap();
@@ -131,14 +143,14 @@ fn corona(b: &mut Bencher) {
 
 #[bench]
 fn corona_many(b: &mut Bencher) {
-    bench(b, SERVER_THREADS, run_corona);
+    bench(b, *SERVER_THREADS, run_corona);
 }
 
 fn run_threads(listener: TcpListener) {
     while let Ok((mut connection, _address)) = listener.accept() {
         thread::spawn(move || {
             let mut buf = [0u8; BUF_SIZE];
-            for _ in 0..EXCHANGES {
+            for _ in 0..*EXCHANGES {
                 connection.read_exact(&mut buf[..]).unwrap();
                 connection.write_all(&buf[..]).unwrap();
             }
@@ -157,7 +169,7 @@ fn threads(b: &mut Bencher) {
 
 #[bench]
 fn threads_many(b: &mut Bencher) {
-    bench(b, SERVER_THREADS, run_threads);
+    bench(b, *SERVER_THREADS, run_threads);
 }
 
 fn run_futures(listener: TcpListener) {
@@ -169,7 +181,7 @@ fn run_futures(listener: TcpListener) {
         .incoming()
         .for_each(move |(connection, _addr)| {
             let buf = vec![0u8; BUF_SIZE];
-            let perform = stream::iter_ok(0..EXCHANGES)
+            let perform = stream::iter_ok(0..*EXCHANGES)
                 .fold((connection, buf), |(connection, buf), _i| {
                     io::read_exact(connection, buf)
                         .and_then(|(connection, buf)| io::write_all(connection, buf))
@@ -192,11 +204,7 @@ fn futures(b: &mut Bencher) {
 
 #[bench]
 fn futures_many(b: &mut Bencher) {
-    bench(b, SERVER_THREADS, run_futures);
-}
-
-lazy_static! {
-    static ref POOL: CpuPool = CpuPool::new_num_cpus();
+    bench(b, *SERVER_THREADS, run_futures);
 }
 
 fn run_futures_cpupool(listener: TcpListener) {
@@ -208,7 +216,7 @@ fn run_futures_cpupool(listener: TcpListener) {
         .incoming()
         .for_each(move |(connection, _addr)| {
             let buf = vec![0u8; BUF_SIZE];
-            let perform = stream::iter_ok(0..EXCHANGES)
+            let perform = stream::iter_ok(0..*EXCHANGES)
                 .fold((connection, buf), |(connection, buf), _i| {
                     io::read_exact(connection, buf)
                         .and_then(|(connection, buf)| io::write_all(connection, buf))
@@ -231,7 +239,7 @@ fn futures_cpupool(b: &mut Bencher) {
 
 #[bench]
 fn futures_cpupool_many(b: &mut Bencher) {
-    bench(b, SERVER_THREADS, run_futures_cpupool);
+    bench(b, *SERVER_THREADS, run_futures_cpupool);
 }
 
 fn run_async(listener: TcpListener) {
@@ -246,7 +254,7 @@ fn run_async(listener: TcpListener) {
         for (mut connection, _addr) in incoming {
             let client = async_block! {
                     let mut buf = vec![0u8; BUF_SIZE];
-                    for _ in 0..EXCHANGES {
+                    for _ in 0..*EXCHANGES {
                         let (c, b) = await!(io::read_exact(connection, buf))?;
                         let (c, b) = await!(io::write_all(c, b))?;
                         connection = c;
@@ -271,5 +279,5 @@ fn async(b: &mut Bencher) {
 
 #[bench]
 fn async_many(b: &mut Bencher) {
-    bench(b, SERVER_THREADS, run_async);
+    bench(b, *SERVER_THREADS, run_async);
 }
