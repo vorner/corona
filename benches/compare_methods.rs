@@ -19,6 +19,7 @@ extern crate futures_await as futures;
 extern crate futures_cpupool;
 #[macro_use]
 extern crate lazy_static;
+extern crate net2;
 extern crate test;
 extern crate tokio_core;
 extern crate tokio_io;
@@ -33,6 +34,7 @@ use corona::prelude::*;
 use futures::{stream, Future, Stream};
 use futures::prelude::*;
 use futures_cpupool::CpuPool;
+use net2::TcpBuilder;
 use tokio_core::net::TcpListener as TokioTcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::io;
@@ -85,7 +87,14 @@ fn batter(addr: SocketAddr) {
 /// We run the clients in multiple threads (so the server is kept busy). To not start and stop a
 /// lot of client threads, we report the progress through a sync channel.
 fn bench(b: &mut Bencher, paral: usize, body: fn(TcpListener)) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = TcpBuilder::new_v4()
+        .unwrap()
+        .reuse_address(true)
+        .unwrap()
+        .bind("127.0.0.1:0")
+        .unwrap()
+        .listen(4096)
+        .unwrap();
     let addr = listener.local_addr().unwrap();
     for _ in 0..paral {
         let listener = listener.try_clone().unwrap();
