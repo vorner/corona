@@ -1,0 +1,18 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
+workspace = ".."
+
+[dependencies]
+
+[dev-dependencies]
+corona = { path = ".." }
+futures-await = "~0.1"
+futures-cpupool = "~0.1"
+lazy_static = "~1"
+may = "~0.2"
+net2 = "~0.2"
+num_cpus = "~1"
+tokio-core = "~0.1"
+tokio-io = "~0.1"
