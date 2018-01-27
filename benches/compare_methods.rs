@@ -290,3 +290,46 @@ fn async(b: &mut Bencher) {
 fn async_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_async);
 }
+
+fn run_async_cpupool(listener: TcpListener) {
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let addr = listener.local_addr().unwrap();
+    let incoming = TokioTcpListener::from_listener(listener, &addr, &handle)
+        .unwrap()
+        .incoming();
+    let main = async_block! {
+        #[async]
+        for (mut connection, _addr) in incoming {
+            let client = async_block! {
+                    let mut buf = vec![0u8; BUF_SIZE];
+                    for _ in 0..*EXCHANGES {
+                        let (c, b) = await!(io::read_exact(connection, buf))?;
+                        let (c, b) = await!(io::write_all(c, b))?;
+                        connection = c;
+                        buf = b;
+                    }
+                    Ok(())
+                }
+                .map(|_| ())
+                .map_err(|e: std::io::Error| panic!(e));
+            let offloaded = POOL.spawn(client)
+                .map(|_| ())
+                .map_err(|e: std::io::Error| panic!(e));
+            handle.spawn(offloaded);
+        }
+        Ok::<_, std::io::Error>(())
+    };
+    core.run(main).unwrap();
+}
+
+/// Async, but with cpu pool
+#[bench]
+fn async_cpupool(b: &mut Bencher) {
+    bench(b, 1, run_async_cpupool);
+}
+
+#[bench]
+fn async_cpupool_many(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_async_cpupool);
+}
