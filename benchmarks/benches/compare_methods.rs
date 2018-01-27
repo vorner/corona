@@ -56,12 +56,12 @@ fn get_var(name: &str, default: usize) -> usize {
 
 lazy_static! {
     static ref POOL: CpuPool = CpuPool::new_num_cpus();
-    static ref PARALLEL: usize = get_var("PARALLEL", 512);
-    static ref EXCHANGES: usize = get_var("EXCHANGES", 6);
-    static ref WARMUP: usize = get_var("WARMUP", 10);
-    static ref BATCH: usize = get_var("BATCH", 20);
+    static ref PARALLEL: usize = get_var("PARALLEL", 256);
+    static ref EXCHANGES: usize = get_var("EXCHANGES", 5);
+    static ref WARMUP: usize = get_var("WARMUP", 2);
+    static ref BATCH: usize = get_var("BATCH", 4);
     static ref CLIENT_THREADS: usize = get_var("CLIENT_THREADS", 32);
-    static ref SERVER_THREADS: usize = get_var("SERVER_THREADS", 4);
+    static ref SERVER_THREADS: usize = get_var("SERVER_THREADS", 2);
 }
 
 /// The client side
@@ -120,7 +120,13 @@ fn bench(b: &mut Bencher, paral: usize, body: fn(TcpListener)) {
     for _ in 0..*WARMUP * *CLIENT_THREADS {
         receiver.recv().unwrap();
     }
-    b.iter(move || receiver.recv().unwrap());
+    b.iter(move || {
+        // One iteration is when all the threads perform the whole batch. This is approximate (they
+        // don't do it at the same time), but it should cancel out over the many iterations.
+        for _ in 0..*CLIENT_THREADS {
+            receiver.recv().unwrap();
+        }
+    });
 }
 
 fn run_corona(listener: TcpListener) {
