@@ -19,7 +19,9 @@ extern crate futures_await as futures;
 extern crate futures_cpupool;
 #[macro_use]
 extern crate lazy_static;
+extern crate may;
 extern crate net2;
+extern crate num_cpus;
 extern crate test;
 extern crate tokio_core;
 extern crate tokio_io;
@@ -27,6 +29,7 @@ extern crate tokio_io;
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, SocketAddr};
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::mpsc;
 use std::thread;
 
@@ -34,6 +37,8 @@ use corona::prelude::*;
 use futures::{stream, Future, Stream};
 use futures::prelude::*;
 use futures_cpupool::CpuPool;
+use may::coroutine;
+use may::net::TcpListener as MayTcpListener;
 use net2::TcpBuilder;
 use tokio_core::net::TcpListener as TokioTcpListener;
 use tokio_core::reactor::Core;
@@ -155,6 +160,11 @@ fn corona_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_corona);
 }
 
+#[bench]
+fn corona_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_corona);
+}
+
 fn run_threads(listener: TcpListener) {
     while let Ok((mut connection, _address)) = listener.accept() {
         thread::spawn(move || {
@@ -179,6 +189,11 @@ fn threads(b: &mut Bencher) {
 #[bench]
 fn threads_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_threads);
+}
+
+#[bench]
+fn threads_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_threads);
 }
 
 fn run_futures(listener: TcpListener) {
@@ -216,6 +231,11 @@ fn futures_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_futures);
 }
 
+#[bench]
+fn futures_cpus(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_futures);
+}
+
 fn run_futures_cpupool(listener: TcpListener) {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -249,6 +269,11 @@ fn futures_cpupool(b: &mut Bencher) {
 #[bench]
 fn futures_cpupool_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_futures_cpupool);
+}
+
+#[bench]
+fn futures_cpupool_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_futures_cpupool);
 }
 
 fn run_async(listener: TcpListener) {
@@ -289,6 +314,11 @@ fn async(b: &mut Bencher) {
 #[bench]
 fn async_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_async);
+}
+
+#[bench]
+fn async_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_async);
 }
 
 fn run_async_cpupool(listener: TcpListener) {
@@ -332,4 +362,64 @@ fn async_cpupool(b: &mut Bencher) {
 #[bench]
 fn async_cpupool_many(b: &mut Bencher) {
     bench(b, *SERVER_THREADS, run_async_cpupool);
+}
+
+#[bench]
+fn async_cpupool_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_async_cpupool);
+}
+
+/*
+ * Note about the unsafety here.
+ *
+ * The may library uses N:M threading with work stealing of coroutine threads. This completely
+ * disregards all the compile-time thread safety guarantees of Rust and turns Rust into a C++ with
+ * better package management.
+ *
+ * The problem is, Rust doesn't check if the stack contains something that isn't Send. And moving
+ * the stack to a different OS thread sends all these potentially non-Send things to a different
+ * thread, basically insuring undefined behaviour.
+ *
+ * This is OK in our case ‒ we do basically nothing here and we have no non-Send data on the
+ * thread. But it's hard to ensure in the general case (you'd have to check the stacks of all the
+ * dependencies and you'd have to make sure none of your dependencies uses TLS). Still, the check
+ * lies with the user of the library.
+ */
+fn run_may(listener: TcpListener) {
+    // May can't change config later on… so all tests need to have the same config. Let's use the
+    // same thing (number of real CPUs) as with the futures-cpupool, to have some illusion of
+    // fairness.
+    may::config()
+        .set_workers(num_cpus::get())
+        .set_io_workers(num_cpus::get());
+    // May doesn't seem to support direct conversion
+    let raw_fd = listener.into_raw_fd();
+    let listener = unsafe { MayTcpListener::from_raw_fd(raw_fd) };
+    while let Ok((mut connection, _address)) = listener.accept() {
+        unsafe {
+            coroutine::spawn(move || {
+                let mut buf = [0u8; BUF_SIZE];
+                for _ in 0..*EXCHANGES {
+                    connection.read_exact(&mut buf[..]).unwrap();
+                    connection.write_all(&buf[..]).unwrap();
+                }
+            })
+        };
+    }
+}
+
+/// May
+#[bench]
+fn may(b: &mut Bencher) {
+    bench(b, 1, run_may);
+}
+
+#[bench]
+fn may_many(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_may);
+}
+
+#[bench]
+fn may_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_may);
 }
