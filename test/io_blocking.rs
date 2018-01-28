@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 
 use corona::prelude::*;
-use corona::io::IoWrapper;
+use corona::io::BlockingWrapper;
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Handle};
 use tokio_io::AsyncRead;
@@ -16,8 +16,8 @@ fn server(handle: Handle) {
         for (connection, _address) in listener.incoming().iter_ok() {
             Coroutine::with_defaults(handle.clone(), move || {
                 let (read, write) = connection.split();
-                let read = BufReader::new(IoWrapper::new(read));
-                let mut write = IoWrapper::new(write);
+                let read = BufReader::new(BlockingWrapper::new(read));
+                let mut write = BlockingWrapper::new(write);
                 for line in read.lines() {
                     let mut line = line.unwrap();
                     line.push('\n');
@@ -32,7 +32,7 @@ fn client(handle: &Handle) {
     let connection = TcpStream::connect(&ADDR.parse().unwrap(), handle)
         .coro_wait()
         .unwrap();
-    let mut connection = IoWrapper::new(connection);
+    let mut connection = BlockingWrapper::new(connection);
     connection.write_all(b"hello\n").unwrap();
     let mut answer = String::new();
     BufReader::new(connection).read_line(&mut answer).unwrap();

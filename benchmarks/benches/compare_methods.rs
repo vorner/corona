@@ -45,7 +45,7 @@ use tokio_core::reactor::Core;
 use tokio_io::io;
 use test::Bencher;
 
-const BUF_SIZE: usize = 1024;
+const BUF_SIZE: usize = 512;
 
 fn get_var(name: &str, default: usize) -> usize {
     env::var(name)
@@ -56,8 +56,8 @@ fn get_var(name: &str, default: usize) -> usize {
 
 lazy_static! {
     static ref POOL: CpuPool = CpuPool::new_num_cpus();
-    static ref PARALLEL: usize = get_var("PARALLEL", 256);
-    static ref EXCHANGES: usize = get_var("EXCHANGES", 5);
+    static ref PARALLEL: usize = get_var("PARALLEL", 128);
+    static ref EXCHANGES: usize = get_var("EXCHANGES", 4);
     static ref WARMUP: usize = get_var("WARMUP", 2);
     static ref BATCH: usize = get_var("BATCH", 4);
     static ref CLIENT_THREADS: usize = get_var("CLIENT_THREADS", 32);

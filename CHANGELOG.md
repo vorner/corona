@@ -1,3 +1,7 @@
+* Added some benchmarks to measure the overhead and compare with others.
+* Introduced the BlockingWrapper to wrap AsyncRead/AsyncWrite things and turn
+  them into blocking (blocking only the coroutine). This allows them to be used
+  in futures-unaware APIs expecting Read/Write.
 * A panic inside a future propagates to the owning coroutine, doesn't kill the
   whole core.
 * The `spawn` method no longer catches panic by default. The

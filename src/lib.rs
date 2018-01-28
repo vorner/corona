@@ -96,13 +96,34 @@
 //! * [`Stream`s](prelude/trait.CoroutineStream.html)
 //! * [`Sink`s](prelude/trait.CoroutineSink.html)
 //!
-//! Furthermore, if the `blocking-wrappers` feature is enabled (it is by default), all `AsyncRead`
-//! and `AsyncWrite` objects can be wrapped in [`corona::io::IoWrapper`]. This implements `Read`
-//! and `Write` in a way that mimics blocking, but it blocks only the coroutine, no the whole
-//! thread. This allows it to be used with usual blocking routines.
+//! ## Coroutine-blocking IO
 //!
-//! The API is still a bit rough (it exposes just the `Read` and `Write` threads, any other methods
-//! need to be accessed through `.inner()` or `.inner_mut`), this might improve in future versions.
+//! Furthermore, if the `blocking-wrappers` feature is enabled (it is by default), all `AsyncRead`
+//! and `AsyncWrite` objects can be wrapped in [`corona::io::BlockingWrapper`]. This implements
+//! `Read` and `Write` in a way that mimics blocking, but it blocks only the coroutine, no the
+//! whole thread. This allows it to be used with usual blocking routines, like
+//! `serde_json::from_reader`.
+//!
+//! The API is still a bit rough (it exposes just the `Read` and `Write` traits, all other methods
+//! need to be accessed through `.inner()` or `.inner_mut`), this will be improved in future
+//! versions.
+//!
+//! ```
+//! # extern crate corona;
+//! # extern crate tokio_core;
+//! use std::io::{Read, Result as IoResult};
+//! use corona::io::BlockingWrapper;
+//! use tokio_core::net::TcpStream;
+//!
+//! fn blocking_read(connection: &mut TcpStream) -> IoResult<()> {
+//!     let mut connection = BlockingWrapper::new(connection);
+//!     let mut buf = [0u8; 64];
+//!     // This will block the coroutine, but not the thread
+//!     connection.read_exact(&mut buf)
+//! }
+//!
+//! # fn main() {}
+//! ```
 //!
 //! # Cleaning up
 //!
