@@ -96,6 +96,14 @@
 //! * [`Stream`s](prelude/trait.CoroutineStream.html)
 //! * [`Sink`s](prelude/trait.CoroutineSink.html)
 //!
+//! Furthermore, if the `blocking-wrappers` feature is enabled (it is by default), all `AsyncRead`
+//! and `AsyncWrite` objects can be wrapped in [`corona::io::IoWrapper`]. This implements `Read`
+//! and `Write` in a way that mimics blocking, but it blocks only the coroutine, no the whole
+//! thread. This allows it to be used with usual blocking routines.
+//!
+//! The API is still a bit rough (it exposes just the `Read` and `Write` threads, any other methods
+//! need to be accessed through `.inner()` or `.inner_mut`), this might improve in future versions.
+//!
 //! # Cleaning up
 //!
 //! If the reactor is dropped while a coroutine waits on something, the waiting method will panic.
@@ -237,7 +245,11 @@
 extern crate context;
 extern crate futures;
 extern crate tokio_core;
+#[cfg(feature = "blocking-wrappers")]
+extern crate tokio_io;
 
+#[cfg(feature = "blocking-wrappers")]
+pub mod io;
 pub mod errors;
 pub mod prelude;
 pub mod wrappers;

@@ -19,10 +19,15 @@ maintenance = { status = "actively-developed" }
 [workspace]
 members = ["benchmarks"]
 
+[features]
+default = ["blocking-wrappers"]
+blocking-wrappers = ["tokio-io"]
+
 [dependencies]
 context = "~2"
 futures = "~0.1"
 tokio-core = "~0.1"
+tokio-io = { version = "~0.1", optional = true }
 
 [dev-dependencies]
 bytes = "~0.4"
