@@ -1,14 +1,10 @@
-extern crate corona;
-extern crate futures;
-extern crate tokio_core;
-
 use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
 use corona::Coroutine;
 use corona::prelude::*;
-use futures::{Future, Stream};
+use futures::{self, Future, Stream};
 use futures::future;
 use futures::stream;
 use tokio_core::reactor::Core;

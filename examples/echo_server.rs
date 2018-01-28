@@ -3,7 +3,6 @@
 //! It listens on port 1234 and sends each line back. It handles multiple clients concurrently.
 
 extern crate corona;
-extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 
