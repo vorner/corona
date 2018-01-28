@@ -56,11 +56,24 @@ fn get_var(name: &str, default: usize) -> usize {
 
 lazy_static! {
     static ref POOL: CpuPool = CpuPool::new_num_cpus();
+
+    // Configuration bellow
+    /// The number of connections to the server.
+    ///
+    /// This is what the clients aim for. But a client may be deleting or creating the connections
+    /// at a time, so this is the upper limit. With multiple clients, this is split between them.
     static ref PARALLEL: usize = get_var("PARALLEL", 128);
+    /// How many ping-pongs are done over each connection.
     static ref EXCHANGES: usize = get_var("EXCHANGES", 4);
+    /// How many batches should happen before starting to measure.
+    ///
+    /// This allows the servers to get up to speed.
     static ref WARMUP: usize = get_var("WARMUP", 2);
+    /// How many times to connect and disconnect all the connections in one benchmark iteration.
     static ref BATCH: usize = get_var("BATCH", 4);
+    /// Into how many client threads the client workload is spread.
     static ref CLIENT_THREADS: usize = get_var("CLIENT_THREADS", 32);
+    /// Number of server instances in the `_many` scenarios.
     static ref SERVER_THREADS: usize = get_var("SERVER_THREADS", 2);
 }
 
