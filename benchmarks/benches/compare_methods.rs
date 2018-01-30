@@ -33,6 +33,7 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::mpsc;
 use std::thread;
 
+use corona::io::BlockingWrapper;
 use corona::prelude::*;
 use futures::{stream, Future, Stream};
 use futures::prelude::*;
@@ -183,6 +184,46 @@ fn corona_many(b: &mut Bencher) {
 fn corona_cpus(b: &mut Bencher) {
     bench(b, num_cpus::get(), run_corona);
 }
+
+fn run_corona_wrapper(listener: TcpListener) {
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let main = Coroutine::with_defaults(core.handle(), move || {
+        let addr = listener.local_addr().unwrap();
+        let incoming = TokioTcpListener::from_listener(listener, &addr, &handle)
+            .unwrap()
+            .incoming()
+            .iter_ok();
+        for (connection, _address) in incoming {
+            Coroutine::with_defaults(handle.clone(), move || {
+                let mut buf = [0u8; BUF_SIZE];
+                let mut connection = BlockingWrapper::new(connection);
+                for _ in 0..*EXCHANGES {
+                    connection.read_exact(&mut buf[..]).unwrap();
+                    connection.write_all(&buf[..]).unwrap();
+                }
+            });
+        }
+    });
+    core.run(main).unwrap();
+}
+
+/// Corona, but with the blocking wrapper
+#[bench]
+fn corona_blocking_wrapper(b: &mut Bencher) {
+    bench(b, 1, run_corona_wrapper);
+}
+
+#[bench]
+fn corona_blocking_wrapper_many(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_corona_wrapper);
+}
+
+#[bench]
+fn corona_blocking_wrapper_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_corona_wrapper);
+}
+
 
 fn run_threads(listener: TcpListener) {
     while let Ok((mut connection, _address)) = listener.accept() {
