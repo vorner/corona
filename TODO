@@ -26,6 +26,8 @@
   running).
 * Wrappers around net/io objects (maybe a separate crate) that pretend to act
   synchronously, but suspend internally.
+* Cleanup control: add more than just leak_on_panic (always leaking, directly
+  aborting, etc).
 
 # Threads
 
