@@ -34,7 +34,7 @@ where
 type BoxedTask = Box<BoxableTask>;
 
 pub(crate) struct WaitTask {
-    pub(crate) poll: Option<&'static mut FnMut() -> Poll<(), ()>>,
+    pub(crate) poll: *mut FnMut() -> Poll<(), ()>,
     pub(crate) context: Option<Context>,
     pub(crate) stack: Option<ProtectedFixedSizeStack>,
     pub(crate) handle: Handle,
@@ -48,10 +48,14 @@ impl Future for WaitTask {
         assert!(self.context.is_some());
         // The catch unwind is fine ‒ we don't swallow the panic, only move it to the correct place
         // ‒ so likely everything relevant will be dropped like with any other normal panic.
-        match panic::catch_unwind(AssertUnwindSafe(self.poll.as_mut().unwrap())) {
+        match panic::catch_unwind(AssertUnwindSafe(unsafe {
+            // The future is still not dangling pointer ‒ we never resumed the stack
+            self.poll
+                .as_mut()
+                .unwrap()
+        })) {
             Ok(Ok(Async::NotReady)) => Ok(Async::NotReady),
             Ok(result) => {
-                drop(self.poll.take());
                 Switch::Resume {
                         stack: self.stack.take().unwrap(),
                     }
@@ -59,7 +63,6 @@ impl Future for WaitTask {
                 result
             },
             Err(panic) => {
-                drop(self.poll.take());
                 Switch::PropagateFuturePanic {
                         stack: self.stack.take().unwrap(),
                         panic
@@ -170,7 +173,8 @@ impl Switch {
         // stack got the control), so the pointer is not dangling. We just extract the data from
         // there right away and leave None on the stack, which doesn't need any special handling
         // during destruction, etc.
-        let optref = unsafe { ptr.as_mut() }.expect("NULL pointer passed through a coroutine switch");
+        let optref = unsafe { ptr.as_mut() }
+            .expect("NULL pointer passed through a coroutine switch");
         optref.take().expect("Switch instruction already extracted")
     }
     /// Switches to a coroutine and back.

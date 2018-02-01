@@ -2,7 +2,6 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::mem;
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
 use context::Context;
@@ -364,9 +363,13 @@ impl Coroutine {
         });
         let mut result: Option<Result<I, E>> = None;
         let (reply_instruction, context) = {
+            // Shenaningas to make the closure pretend to be 'static to the compiler.
             let res_ref = &mut result as *mut _ as usize;
+            let fut_ref = &mut fut as *mut _ as usize;
+
             let mut poll = move || {
-                let res = match fut.poll() {
+                let fut = fut_ref as *mut Fut;
+                let res = match unsafe { fut.as_mut() }.unwrap().poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(ok)) => Ok(ok),
                     Err(err) => Err(err),
@@ -376,10 +379,9 @@ impl Coroutine {
                 unsafe { *result = Some(res) };
                 Ok(Async::Ready(()))
             };
-            let p: &mut FnMut() -> Poll<(), ()> = &mut poll;
             let handle = my_context.handle.clone();
             let mut task = WaitTask {
-                poll: Some(unsafe { mem::transmute::<_, &'static mut _>(p) }),
+                poll: &mut poll,
                 context: None,
                 handle,
                 leak_on_panic: my_context.leak_on_panic,
