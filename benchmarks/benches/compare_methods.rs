@@ -33,6 +33,7 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::mpsc;
 use std::thread;
 
+use corona::io::BlockingWrapper;
 use corona::prelude::*;
 use futures::{stream, Future, Stream};
 use futures::prelude::*;
@@ -45,7 +46,7 @@ use tokio_core::reactor::Core;
 use tokio_io::io;
 use test::Bencher;
 
-const BUF_SIZE: usize = 1024;
+const BUF_SIZE: usize = 512;
 
 fn get_var(name: &str, default: usize) -> usize {
     env::var(name)
@@ -56,11 +57,24 @@ fn get_var(name: &str, default: usize) -> usize {
 
 lazy_static! {
     static ref POOL: CpuPool = CpuPool::new_num_cpus();
-    static ref PARALLEL: usize = get_var("PARALLEL", 256);
-    static ref EXCHANGES: usize = get_var("EXCHANGES", 5);
+
+    // Configuration bellow
+    /// The number of connections to the server.
+    ///
+    /// This is what the clients aim for. But a client may be deleting or creating the connections
+    /// at a time, so this is the upper limit. With multiple clients, this is split between them.
+    static ref PARALLEL: usize = get_var("PARALLEL", 128);
+    /// How many ping-pongs are done over each connection.
+    static ref EXCHANGES: usize = get_var("EXCHANGES", 4);
+    /// How many batches should happen before starting to measure.
+    ///
+    /// This allows the servers to get up to speed.
     static ref WARMUP: usize = get_var("WARMUP", 2);
+    /// How many times to connect and disconnect all the connections in one benchmark iteration.
     static ref BATCH: usize = get_var("BATCH", 4);
+    /// Into how many client threads the client workload is spread.
     static ref CLIENT_THREADS: usize = get_var("CLIENT_THREADS", 32);
+    /// Number of server instances in the `_many` scenarios.
     static ref SERVER_THREADS: usize = get_var("SERVER_THREADS", 2);
 }
 
@@ -170,6 +184,46 @@ fn corona_many(b: &mut Bencher) {
 fn corona_cpus(b: &mut Bencher) {
     bench(b, num_cpus::get(), run_corona);
 }
+
+fn run_corona_wrapper(listener: TcpListener) {
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let main = Coroutine::with_defaults(core.handle(), move || {
+        let addr = listener.local_addr().unwrap();
+        let incoming = TokioTcpListener::from_listener(listener, &addr, &handle)
+            .unwrap()
+            .incoming()
+            .iter_ok();
+        for (connection, _address) in incoming {
+            Coroutine::with_defaults(handle.clone(), move || {
+                let mut buf = [0u8; BUF_SIZE];
+                let mut connection = BlockingWrapper::new(connection);
+                for _ in 0..*EXCHANGES {
+                    connection.read_exact(&mut buf[..]).unwrap();
+                    connection.write_all(&buf[..]).unwrap();
+                }
+            });
+        }
+    });
+    core.run(main).unwrap();
+}
+
+/// Corona, but with the blocking wrapper
+#[bench]
+fn corona_blocking_wrapper(b: &mut Bencher) {
+    bench(b, 1, run_corona_wrapper);
+}
+
+#[bench]
+fn corona_blocking_wrapper_many(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_corona_wrapper);
+}
+
+#[bench]
+fn corona_blocking_wrapper_cpus(b: &mut Bencher) {
+    bench(b, num_cpus::get(), run_corona_wrapper);
+}
+
 
 fn run_threads(listener: TcpListener) {
     while let Ok((mut connection, _address)) = listener.accept() {

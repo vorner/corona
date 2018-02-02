@@ -24,10 +24,10 @@
 * Make „eagerness“ of start of the coroutine configurable (eg. do we schedule
   it to run later on, or execute it right await and stop the parent while it's
   running).
-* Wrappers around net/io objects (maybe a separate crate) that pretend to act
-  synchronously, but suspend internally.
 * Cleanup control: add more than just leak_on_panic (always leaking, directly
   aborting, etc).
+* corona::io::BlockingWrapper could use some more methods, to expose the inner
+  stream.
 
 # Threads
 

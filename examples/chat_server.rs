@@ -23,12 +23,14 @@ extern crate tokio_core;
 extern crate tokio_io;
 
 use std::cell::RefCell;
-use std::io::{BufReader, Error as IoError};
+use std::io::{BufRead, BufReader, Error as IoError};
 use std::iter;
+use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
 
 use bytes::BytesMut;
 use corona::Coroutine;
+use corona::io::BlockingWrapper;
 use corona::prelude::*;
 use corona::wrappers::SinkSender;
 use futures::{future, Future};
@@ -36,7 +38,7 @@ use futures::unsync::mpsc::{self, Sender, Receiver};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Handle};
 use tokio_io::AsyncRead;
-use tokio_io::io::{self as aio, WriteHalf};
+use tokio_io::io::WriteHalf;
 use tokio_io::codec::{Encoder, FramedWrite};
 
 /// Encoder turning strings into lines.
@@ -67,19 +69,20 @@ fn handle_connection(handle: &Handle,
     let (input, output) = connection.split();
     let writer = FramedWrite::new(output, LineEncoder);
     clients.borrow_mut().push(writer);
-    let input = BufReader::new(input);
-    Coroutine::new(handle.clone()).stack_size(32_768).spawn(move || {
+    let input = BufReader::new(BlockingWrapper::new(input));
+    Coroutine::new(handle.clone()).stack_size(32_768).spawn_catch_panic(AssertUnwindSafe(move || {
         // If there's an error, kill the current coroutine. That one is not waited on and the
         // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
         // coroutines act.
-        for line in aio::lines(input).iter_ok() {
+        for line in input.lines() {
+            let line = line.expect("Broken line on input");
             // Pass each line to the broadcaster so it sends it to everyone.
             // Send it back (the coroutine will yield until the data is written). May block on
             // being full for a while, then we don't accept more messages.
             msgs.coro_send(line).expect("The broadcaster suddenly disappeared");
         }
         eprintln!("A connection terminated");
-    }).expect("Wrong stack size");
+    })).expect("Wrong stack size");
 }
 
 fn broadcaster(msgs: Receiver<String>, clients: &Clients) {

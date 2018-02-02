@@ -2,10 +2,6 @@
 //!
 //! It checks there's no mixup in the TLS.
 
-extern crate corona;
-extern crate futures;
-extern crate tokio_core;
-
 use corona::prelude::*;
 use futures::future;
 use tokio_core::reactor::Core;
