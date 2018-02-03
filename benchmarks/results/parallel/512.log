@@ -1,0 +1,24 @@
+101,686,994 ns/iter (+/- 5,123,786) async
+ 56,108,200 ns/iter (+/- 7,216,202) async_cpupool
+ 57,927,110 ns/iter (+/- 9,826,608) async_cpupool_cpus
+ 56,999,093 ns/iter (+/- 6,922,906) async_cpupool_many
+ 41,948,095 ns/iter (+/- 3,438,450) async_cpus
+ 56,715,692 ns/iter (+/- 5,525,090) async_many
+140,258,883 ns/iter (+/- 15,710,836) corona
+140,791,160 ns/iter (+/- 8,103,792) corona_blocking_wrapper
+ 50,665,896 ns/iter (+/- 11,235,829) corona_blocking_wrapper_cpus
+ 76,198,800 ns/iter (+/- 4,139,361) corona_blocking_wrapper_many
+ 49,710,450 ns/iter (+/- 9,349,531) corona_cpus
+ 76,439,679 ns/iter (+/- 3,527,176) corona_many
+107,429,864 ns/iter (+/- 7,347,724) futures
+ 56,125,546 ns/iter (+/- 7,982,545) futures_cpupool
+ 60,735,392 ns/iter (+/- 11,645,379) futures_cpupool_cpus
+ 60,375,436 ns/iter (+/- 16,537,147) futures_cpupool_many
+ 60,969,328 ns/iter (+/- 5,157,085) futures_cpus
+ 60,351,847 ns/iter (+/- 6,153,672) futures_many
+ 75,033,737 ns/iter (+/- 9,063,053) may
+ 76,966,372 ns/iter (+/- 11,302,646) may_cpus
+ 74,542,299 ns/iter (+/- 10,573,275) may_many
+ 94,386,076 ns/iter (+/- 13,568,794) threads
+110,276,548 ns/iter (+/- 9,329,872) threads_cpus
+101,418,539 ns/iter (+/- 12,408,728) threads_many
