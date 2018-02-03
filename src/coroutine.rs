@@ -42,6 +42,56 @@ impl<R> Future for CoroutineResult<R> {
     }
 }
 
+/// Controls how a cleanup happens if the driving `core` is dropped while a coroutine lives.
+///
+/// If a core is dropped and there is a coroutine that haven't finished yet, there's no chance for
+/// it to make further progress and it becomes orphaned. The question is how to go about cleaining
+/// it up, as there's a stack allocated somewhere, full of data that may need a destructor run.
+///
+/// Some primitives for waiting for a future resolution in the coroutine return an error in such
+/// case, but most of them panic ‒ panicking in the stack does exactly what is needed.
+///
+/// However, there are problems when the core is dropped due to a panic itself ‒ then this would
+/// double panic and abort the whole program.
+///
+/// This describes a strategy taken for the cleaning up of a coroutine (configured with
+/// [`Coroutine::cleanup_strategy`](struct.Coroutine.html#method.cleanup_strategy).
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CleanupStrategy {
+    /// Always perform cleanup.
+    ///
+    /// No matter the situation, perform a cleanup ‒ return the error or panic. This is the
+    /// default.
+    CleanupAlways,
+    /// Cleanup the coroutine unless it is already panicking.
+    ///
+    /// This opts out to *not* clean up the coroutine and leak the data on its stack in case a
+    /// panic is already happening. This prevents the double-panic problem, but doesn't free some
+    /// resources or run destructors (this may lead to files not being flushed, for example).
+    ///
+    /// This is probably a good idea when panics lead to program termination anyway ‒ that way a
+    /// better error message is output if only one panic happens.
+    ///
+    /// It may also be appropriate if your application is compiled with `panic = "abort"`.
+    LeakOnPanic,
+    /// Do not perform any cleanup.
+    ///
+    /// This is suitable if you never drop the core until the end of the program. This doesn't
+    /// perform the cleanup at all. This may lead to destructors not being run, which may lead to
+    /// effects like files not being flushed.
+    LeakAlways,
+    /// Perform a cleanup in normal situation, abort if already panicking.
+    ///
+    /// This is similar to how `CleanupAlways` acts, but instead of relying on the double-panic to
+    /// abort the program, do the abort right away.
+    AbortOnPanic,
+    /// Abort on any attempt to drop a living coroutine.
+    ///
+    /// This is mostly for completeness sake, but it may make some sense if you're sure the core is
+    /// never dropped while coroutines live.
+    AbortAlways,
+}
+
 struct CoroutineContext {
     /// Use this to spawn waiting coroutines
     handle: Handle,
@@ -49,8 +99,8 @@ struct CoroutineContext {
     parent_context: Context,
     /// Our own stack. We keep ourselvel alive.
     stack: ProtectedFixedSizeStack,
-    /// Do we want to leak this coroutine if the core is dropped due to a panic?
-    leak_on_panic: bool,
+    /// How do we clean up the coroutine if it doesn't end before dropping the core?
+    cleanup_strategy: CleanupStrategy,
 }
 
 thread_local! {
@@ -65,7 +115,7 @@ thread_local! {
 pub struct Coroutine {
     handle: Handle,
     stack_size: usize,
-    leak_on_panic: bool,
+    cleanup_strategy: CleanupStrategy,
 }
 
 impl Coroutine {
@@ -101,7 +151,7 @@ impl Coroutine {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
-            leak_on_panic: false,
+            cleanup_strategy: CleanupStrategy::CleanupAlways,
         }
     }
 
@@ -123,24 +173,12 @@ impl Coroutine {
         self
     }
 
-    /// Leak coroutines instead of double-panicking.
+    /// Configures how the coroutines should be cleaned up if the core is dropped before the
+    /// coroutine resolves.
     ///
-    /// A coroutine whose core has been dropped is usually cleaned up by panicking inside the
-    /// coroutine. However, if the core has been dropped because the main coroutine panicked,
-    /// this'd lead to a double-panic, terminating the application.
-    ///
-    /// This allows *not* cleaning the coroutines in such case. In such situation, the stack itself
-    /// is released, but the destructors of objects on the stack are not, possibly leaking
-    /// resources.
-    ///
-    /// Other options to handling this is to use the `cleanup` methods for waiting (these return
-    /// result and it is up to the code to handle the cleanup manually), or using the
-    /// [`Coroutine::main`](#method.main) to start all the coroutines.
-    ///
-    /// Note that if a coroutine is leaked, its result future currently never resolves. This may
-    /// change in the future (then it would return `TaskFailed::Lost`).
-    pub fn leak_on_panic(&mut self, leak: bool) -> &mut Self {
-        self.leak_on_panic = leak;
+    /// See the details of [`CleanupStrategy`](enum.CleanupStrategy.html).
+    pub fn cleanup_strategy(&mut self, strategy: CleanupStrategy) -> &mut Self {
+        self.cleanup_strategy = strategy;
         self
     }
 
@@ -198,14 +236,14 @@ impl Coroutine {
         let (sender, receiver) = oneshot::channel();
 
         let handle = self.handle.clone();
-        let leak_on_panic = self.leak_on_panic;
+        let cleanup_strategy = self.cleanup_strategy;
 
         let perform = move |context, stack| {
             let my_context = CoroutineContext {
                 handle,
                 parent_context: context,
                 stack,
-                leak_on_panic,
+                cleanup_strategy,
             };
             CONTEXTS.with(|c| c.borrow_mut().push(my_context));
             let mut panic_result = None;
@@ -384,7 +422,7 @@ impl Coroutine {
                 poll: &mut poll,
                 context: None,
                 handle,
-                leak_on_panic: my_context.leak_on_panic,
+                cleanup_strategy: my_context.cleanup_strategy,
                 stack: Some(my_context.stack),
             };
             let instruction = Switch::WaitFuture { task };
@@ -401,7 +439,7 @@ impl Coroutine {
             parent_context: context,
             stack: stack,
             handle: my_context.handle,
-            leak_on_panic: my_context.leak_on_panic,
+            cleanup_strategy: my_context.cleanup_strategy,
         };
         CONTEXTS.with(|c| c.borrow_mut().push(new_context));
         match result {
@@ -518,7 +556,7 @@ mod tests {
     fn panic_leak() {
         let core = Core::new().unwrap();
         let _coroutine = Coroutine::new(core.handle())
-            .leak_on_panic(true)
+            .cleanup_strategy(CleanupStrategy::LeakOnPanic)
             .spawn(|| {
                 let _ = Coroutine::wait(future::empty::<(), ()>());
                 panic!("Should never get here!");
@@ -538,6 +576,27 @@ mod tests {
             panic!("Coroutine didn't get lost correctly");
         }
         */
+    }
+
+    /// Tests unconditional leaking on dropping the core. We panic in the destructor in there, so
+    /// that checks it is not called.
+    #[test]
+    fn leak_always() {
+        let core = Core::new().unwrap();
+        Coroutine::new(core.handle())
+            .cleanup_strategy(CleanupStrategy::LeakAlways)
+            .spawn(|| {
+                struct Destroyer;
+                impl Drop for Destroyer {
+                    fn drop(&mut self) {
+                        panic!("Destructor called");
+                    }
+                }
+                let _d = Destroyer;
+                let _ = Coroutine::wait(future::empty::<(), ()>());
+            })
+            .unwrap();
+        drop(core);
     }
 
     /// A panic from inside the future doesn't kill the core, but falls out of the wait into the

@@ -1,9 +1,11 @@
+* Added configuration for the cleanup strategy (eg. when the core is dropped and
+  the coroutines didn't have a chance to finish yet).
 * Added some benchmarks to measure the overhead and compare with others.
 * Introduced the BlockingWrapper to wrap AsyncRead/AsyncWrite things and turn
   them into blocking (blocking only the coroutine). This allows them to be used
   in futures-unaware APIs expecting Read/Write.
 * A panic inside a future propagates to the owning coroutine, doesn't kill the
-  whole core.
+  whole core (unless the panic is also propagated out of the coroutine).
 * The `spawn` method no longer catches panic by default. The
   `spawn_catch_panic`.
 

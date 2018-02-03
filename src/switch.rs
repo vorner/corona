@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
+use std::process;
 use std::thread;
 
 use context::{Context, Transfer};
@@ -9,6 +10,7 @@ use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Future, Poll};
 use tokio_core::reactor::Handle;
 
+use coroutine::CleanupStrategy;
 use errors::StackError;
 use stack_cache;
 
@@ -38,7 +40,7 @@ pub(crate) struct WaitTask {
     pub(crate) context: Option<Context>,
     pub(crate) stack: Option<ProtectedFixedSizeStack>,
     pub(crate) handle: Handle,
-    pub(crate) leak_on_panic: bool,
+    pub(crate) cleanup_strategy: CleanupStrategy,
 }
 
 impl Future for WaitTask {
@@ -77,15 +79,25 @@ impl Future for WaitTask {
 impl Drop for WaitTask {
     fn drop(&mut self) {
         if let Some(context) = self.context.take() {
-            if self.leak_on_panic && thread::panicking() {
-                // We leak all the things on the stack, but we get rid of the stack itself at least
-                // (by letting it disappear with us)
-                return;
+            // Not terminated yet?
+            let perform_cleanup = match (self.cleanup_strategy, thread::panicking()) {
+                (CleanupStrategy::CleanupAlways, _)
+                    | (CleanupStrategy::LeakOnPanic, false)
+                    | (CleanupStrategy::AbortOnPanic, false) => true,
+                (CleanupStrategy::LeakAlways, _)
+                    | (CleanupStrategy::LeakOnPanic, true) => false,
+                (CleanupStrategy::AbortAlways, _)
+                    | (CleanupStrategy::AbortOnPanic, true) => {
+                        process::abort();
+                    }
+            };
+            if perform_cleanup {
+                Switch::Cleanup {
+                        stack: self.stack.take().expect("Taken stack, but not context?")
+                    }
+                    .run_child(context);
+
             }
-            Switch::Cleanup {
-                    stack: self.stack.take().expect("Taken stack, but not context?")
-                }
-                .run_child(context);
         }
     }
 }
