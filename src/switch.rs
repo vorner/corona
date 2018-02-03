@@ -14,7 +14,7 @@ use coroutine::CleanupStrategy;
 use errors::StackError;
 use stack_cache;
 
-/// A workaround befause Box<FnOnce> is currently very unusable in rust :-(.
+/// A workaround because Box<FnOnce> is currently very unusable in rust :-(.
 pub(crate) trait BoxableTask {
     fn perform(&mut self, Context, ProtectedFixedSizeStack) ->
         (Context, ProtectedFixedSizeStack, Option<Box<Any + Send>>);

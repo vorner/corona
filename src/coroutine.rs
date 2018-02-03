@@ -45,7 +45,7 @@ impl<R> Future for CoroutineResult<R> {
 /// Controls how a cleanup happens if the driving `core` is dropped while a coroutine lives.
 ///
 /// If a core is dropped and there is a coroutine that haven't finished yet, there's no chance for
-/// it to make further progress and it becomes orphaned. The question is how to go about cleaining
+/// it to make further progress and it becomes orphaned. The question is how to go about cleaning
 /// it up, as there's a stack allocated somewhere, full of data that may need a destructor run.
 ///
 /// Some primitives for waiting for a future resolution in the coroutine return an error in such
@@ -160,10 +160,10 @@ impl Coroutine {
     /// Coroutines spawned from this builder will get stack of this size. The default is something
     /// small, so if you use recursion, you might want to use this.
     ///
-    /// Note that the size must be a valid stack size. This is platform dependente, but usually
+    /// Note that the size must be a valid stack size. This is platform dependent, but usually
     /// must be multiple of a page size. That usually means a multiple of 4096.
     ///
-    /// If an invalid size is set, attemts to spawn coroutines will fail with an error.
+    /// If an invalid size is set, attempts to spawn coroutines will fail with an error.
     ///
     /// # Parameters
     ///
@@ -356,7 +356,7 @@ impl Coroutine {
     ///
     /// If called outside of a coroutine (there's nothing to suspend).
     ///
-    /// Also, panics from withit the provided future are propagated into the calling coroutine.
+    /// Also, panics from within the provided future are propagated into the calling coroutine.
     pub fn wait<I, E, Fut>(mut fut: Fut) -> Result<Result<I, E>, Dropped>
     where
         Fut: Future<Item = I, Error = E>,
@@ -401,7 +401,7 @@ impl Coroutine {
         });
         let mut result: Option<Result<I, E>> = None;
         let (reply_instruction, context) = {
-            // Shenaningas to make the closure pretend to be 'static to the compiler.
+            // Shenanigans to make the closure pretend to be 'static to the compiler.
             let res_ref = &mut result as *mut _ as usize;
             let fut_ref = &mut fut as *mut _ as usize;
 

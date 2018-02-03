@@ -83,7 +83,7 @@ fn cleanup_nopanic() {
     let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(&status_cp));
 
     status.before_drop();
-    // The coroutine finishes once we drop the core. Note that it finishes sucessfully, not
+    // The coroutine finishes once we drop the core. Note that it finishes successfully, not
     // panicking.
     drop(core);
     status.after_drop(false);

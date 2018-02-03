@@ -1,4 +1,4 @@
-//! Varius errors.
+//! Various errors.
 
 use std::any::Any;
 use std::error::Error;
@@ -28,7 +28,7 @@ impl Display for Dropped {
 
 /// The task (coroutine) has failed.
 ///
-/// This is used as an error type and represents an unsuccessfull coroutine.
+/// This is used as an error type and represents an unsuccessful coroutine.
 #[derive(Debug)]
 pub enum TaskFailed {
     /// There was a panic inside the coroutine.
@@ -39,7 +39,7 @@ pub enum TaskFailed {
     /// There was a panic in the coroutine.
     ///
     /// However, the panic got re-established inside the coroutine's caller. Observing this result
-    /// is rare, since usually the propagated panic destroyes the owner of the coroutine as well.
+    /// is rare, since usually the propagated panic destroys the owner of the coroutine as well.
     PanicPropagated,
     /// The coroutine was lost.
     ///
