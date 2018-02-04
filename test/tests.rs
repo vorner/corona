@@ -11,4 +11,5 @@ mod early_cleanup;
 mod io_blocking;
 mod prelude_api;
 mod recursive_core;
+mod reentrant_wait;
 mod version;
