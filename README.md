@@ -1,6 +1,6 @@
 # Corona
 
-[![Travis Build Status](https://api.travis-ci.org/vorner/corona.png?branch=master)](https://travis-ci.org/vorner/corona)
+[![Travis Build Status](https://api.travis-ci.org/vorner/corona.svg?branch=master)](https://travis-ci.org/vorner/corona)
 [![AppVeyor Build status](https://ci.appveyor.com/api/projects/status/ygytb97bion810ru/branch/master?svg=true)](https://ci.appveyor.com/project/vorner/corona/branch/master)
 
 When you need to get the asynchronous out of the way.
