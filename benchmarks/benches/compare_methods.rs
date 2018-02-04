@@ -12,7 +12,7 @@
 //! to synchronize shut down. As they just sit there inactive, this should have no real effect on
 //! the performance.
 //!
-//! The `*_many` varianst run the listener in multiple independent threads.
+//! The `*_many` variants run the listener in multiple independent threads.
 
 extern crate corona;
 extern crate futures_await as futures;

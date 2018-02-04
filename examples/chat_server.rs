@@ -10,7 +10,7 @@
 //! Each receiving coroutine simply reads the lines from the client and stuffs them into the
 //! channel.
 //!
-//! There's a shared `Vec` of new writing halfs of the connections. Before every message, the
+//! There's a shared `Vec` of new writing halves of the connections. Before every message, the
 //! broadcasting coroutine extracts the new ones and appends them to its local storage (so it
 //! doesn't have to keep the shared state borrowed).
 //!

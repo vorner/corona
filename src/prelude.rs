@@ -1,6 +1,6 @@
 //! A module for wildcard import.
 //!
-//! This contains some traits and general types that are meant to be wildcard importet. These are
+//! This contains some traits and general types that are meant to be wildcard imported. These are
 //! extension traits, attaching more methods to existing types.
 //!
 //! Each of the main `futures` trait has one extension crate here. Also, the
@@ -74,7 +74,7 @@ pub trait CoroutineFuture: Sized {
     /// A coroutine aware wait on the result that doesn't panic.
     ///
     /// This is just like [`coro_wait`](#method.coro_wait), but instead of panicking when the
-    /// reactor is unexpectadly dropped, it returns `Err(Dropped)`. This might be used to implement
+    /// reactor is unexpectedly dropped, it returns `Err(Dropped)`. This might be used to implement
     /// manual coroutine cleanup when needed.
     ///
     /// # Panics
@@ -111,7 +111,7 @@ pub trait CoroutineStream: Sized {
     /// thrown away (you may want to use [`iter_result`](#method.iter_result) if you care about the
     /// errors).
     ///
-    /// When it waites for another item to come out of the stream, the coroutine suspends and
+    /// When it waits for another item to come out of the stream, the coroutine suspends and
     /// switches to others if there are some ready.
     ///
     /// # Panics
