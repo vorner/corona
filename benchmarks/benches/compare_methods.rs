@@ -122,7 +122,7 @@ fn bench(b: &mut Bencher, paral: usize, body: fn(TcpListener)) {
     let (sender, receiver) = mpsc::sync_channel(*CLIENT_THREADS * 10);
     for _ in 0..*CLIENT_THREADS {
         let sender = sender.clone();
-        let addr = addr.clone();
+        let addr = addr;
         thread::spawn(move || {
             while let Ok(_) = sender.send(()) {
                 for _ in 0..*BATCH {
@@ -235,6 +235,7 @@ fn run_threads(listener: TcpListener) {
             }
         });
     }
+    drop(listener); // Just to prevent clippy warning
 }
 
 /// Runs a fresh thread for each connection

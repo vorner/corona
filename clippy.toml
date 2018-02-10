@@ -1,0 +1,2 @@
+# The lint is kind of stupid, because hex literals don't convey the general size
+literal-representation-threshold = 10000000000
