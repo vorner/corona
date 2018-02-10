@@ -1,3 +1,5 @@
+# 0.4.0-pre.1
+
 * Added configuration for the cleanup strategy (eg. when the core is dropped and
   the coroutines didn't have a chance to finish yet).
 * Added some benchmarks to measure the overhead and compare with others.
