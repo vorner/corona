@@ -146,10 +146,20 @@
 //!
 //! # API Stability
 //!
-//! The API is likely to get stabilized soon (I hope it won't change any more). But I still  want
-//! to do more experimentation before making it official.
+//! The API is likely to get stabilized soon (I hope it won't change much any more). But I still
+//! want to do more experimentation before making it official.
 //!
-//! Other experiments are also welcome.
+//! There are two areas where I expect some changes will still be needed:
+//!
+//! * The tokio and futures infrastructure is about to go 0.2 and it will make sense to reflect
+//!   these changes. One of the most important changes is separating the executor and event loop ‒
+//!   corona needs executor, so it might be possible it won't directly depend on tokio.
+//! * I want to support scoped coroutines (similar to some libraries that provide scoped threads).
+//!
+//! Both of these should be very easy to adapt to in code ‒ they won't require redesigning the
+//! code, only local changes.
+//!
+//! Other experiments from consumers are also welcome.
 //!
 //! # Known problems
 //!
