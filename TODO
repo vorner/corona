@@ -3,7 +3,6 @@
 * More examples
   - Including comparison with other methods, like threads, plain futures,
     futures-await, etc.
-* A blog post, comparing and a case study
 
 # Panicking/unwinding
 

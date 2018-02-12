@@ -11,9 +11,9 @@ coroutine is also a future and a coroutine can wait for a future to complete.
 Furthermore, the futures don't have to be `'static`.
 
 On the other hand, there's a runtime cost to the library. The performance does
-not necessarily suffer (that yet needs to be measured, but the fact a future
-doesn't need to own its data may actually make it *faster*). But each coroutine
-has its own stack, which takes memory.
+not necessarily suffer (as seen in the
+[benchmarks](https://vorner.github.io/async-bench.html)). But each coroutine has
+its own stack, which takes memory.
 
 You want to read the [docs](https://docs.rs/corona) and examine the
 [examples](https://github.com/vorner/corona/tree/master/examples).
@@ -21,7 +21,8 @@ You want to read the [docs](https://docs.rs/corona) and examine the
 # Status
 
 I hope to stabilize the API soon. But I want to write some more examples and
-experiments first.
+experiments first. Also, an update to reflect on the changes in Tokio world
+needs to happen.
 
 If you use it for something, I want to hear about it.
 
