@@ -8,7 +8,6 @@ use context::Context;
 use context::stack::{Stack, ProtectedFixedSizeStack};
 use futures::{Async, Future, Poll};
 use futures::unsync::oneshot::{self, Receiver};
-use tokio_core::reactor::Handle;
 
 use errors::{Dropped, StackError, TaskFailed};
 use switch::{Switch, WaitTask};
@@ -447,19 +446,20 @@ mod tests {
     use std::time::Duration;
 
     use futures::future;
-    use tokio_core::reactor::{Core, Timeout};
+    use tokio::clock;
+    use tokio::prelude::*;
+    use tokio::runtime::current_thread::{self, Runtime};
+    use tokio::timer::Delay;
 
     use super::*;
 
     /// Test spawning and execution of tasks.
     #[test]
     fn spawn_some() {
-        let mut core = Core::new().unwrap();
         let s1 = Rc::new(AtomicBool::new(false));
         let s2 = Rc::new(AtomicBool::new(false));
         let s1c = s1.clone();
         let s2c = s2.clone();
-        let handle = core.handle();
 
         let mut builder = Coroutine::new();
         builder.stack_size(40960);
@@ -481,57 +481,62 @@ mod tests {
         assert!(s2.load(Ordering::Relaxed), "The inner closure didn't run");
         // The result gets propagated through.
         let extract = result.and_then(|r| r);
-        assert_eq!(42, core.run(extract).unwrap());
+        assert_eq!(42, current_thread::block_on_all(extract).unwrap());
     }
 
     /// Wait for a future to complete.
     #[test]
     fn future_wait() {
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
-        let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::with_defaults(move || {
-            let msg = Coroutine::wait(receiver).unwrap().unwrap();
-            msg
-        });
-        Coroutine::with_defaults(move || {
-            let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
-            Coroutine::wait(timeout).unwrap().unwrap();
-            sender.send(42).unwrap();
-        });
-        assert_eq!(42, core.run(all_done).unwrap());
+        let result = current_thread::block_on_all(future::lazy(|| {
+            let (sender, receiver) = oneshot::channel();
+            let all_done = Coroutine::with_defaults(move || {
+                let msg = Coroutine::wait(receiver).unwrap().unwrap();
+                msg
+            });
+            Coroutine::with_defaults(move || {
+                let timeout = Delay::new(clock::now() + Duration::from_millis(50));
+                Coroutine::wait(timeout).unwrap().unwrap();
+                sender.send(42).unwrap();
+            });
+            all_done
+        }));
+        assert_eq!(42, result.unwrap());
     }
 
     /// The panic doesn't kill the main thread, but is reported.
     #[test]
     fn panics_catch() {
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
-        match core.run(Coroutine::new().spawn_catch_panic(|| panic!("Test")).unwrap()) {
+        let mut rt = Runtime::new().unwrap();
+        let catch_panic = future::lazy(|| {
+            Coroutine::new().spawn_catch_panic(|| panic!("Test")).unwrap()
+        });
+        match rt.block_on(catch_panic) {
             Err(TaskFailed::Panicked(_)) => (),
             _ => panic!("Panic not reported properly"),
         }
-        let handle = core.handle();
-        assert_eq!(42, core.run(Coroutine::with_defaults(|| 42)).unwrap());
+        assert_eq!(42, rt.block_on(future::lazy(|| Coroutine::with_defaults(|| 42))).unwrap());
     }
 
     /// However, normal coroutines do panic.
     #[test]
     #[should_panic]
     fn panics_spawn() {
-        let core = Core::new().unwrap();
-        let _ = Coroutine::new().spawn(|| panic!("Test"));
+        let _ = current_thread::block_on_all(future::lazy(|| {
+            Coroutine::new().spawn(|| panic!("Test"))
+        }));
     }
 
     /// This one panics and the panic is propagated, but after suspension point it is out of run.
     #[test]
     fn panics_run() {
-        let mut core = Core::new().unwrap();
-        let coroutine = Coroutine::with_defaults(|| {
-                let _ = Coroutine::wait(future::ok::<(), ()>(()));
-                panic!("Test");
-            });
-        panic::catch_unwind(AssertUnwindSafe(|| core.run(coroutine))).unwrap_err();
+        panic::catch_unwind(|| {
+            current_thread::block_on_all(future::lazy(|| {
+                Coroutine::with_defaults(|| {
+                    let _ = Coroutine::wait(future::ok::<(), ()>(()));
+                    panic!("Test");
+                })
+            }))
+        }).unwrap_err();
     }
 
     /// It's impossible to wait on a future outside of a coroutine
@@ -545,19 +550,16 @@ mod tests {
     /// hard.
     #[test]
     fn panic_leak() {
-        let core = Core::new().unwrap();
-        let _coroutine = Coroutine::new()
-            .cleanup_strategy(CleanupStrategy::LeakOnPanic)
-            .spawn(|| {
-                let _ = Coroutine::wait(future::empty::<(), ()>());
-                panic!("Should never get here!");
-            })
-            .unwrap();
-        panic::catch_unwind(AssertUnwindSafe(move || {
-                let _core = core;
-                panic!("Test");
-            }))
-            .unwrap_err();
+        panic::catch_unwind(|| current_thread::block_on_all(future::lazy(|| -> Result<(), ()> {
+            let _coroutine = Coroutine::new()
+                .cleanup_strategy(CleanupStrategy::LeakOnPanic)
+                .spawn(|| {
+                    let _ = Coroutine::wait(future::empty::<(), ()>());
+                    panic!("Should never get here!");
+                })
+                .unwrap();
+            panic!("Test");
+        }))).unwrap_err();
         /*
          * FIXME: This doesn't work as intended. The sender gets leaked too, so it is never closed
          * and we don't get the Lost case. Any way to make sure we get it?
@@ -573,21 +575,25 @@ mod tests {
     /// that checks it is not called.
     #[test]
     fn leak_always() {
-        let core = Core::new().unwrap();
-        Coroutine::new()
-            .cleanup_strategy(CleanupStrategy::LeakAlways)
-            .spawn(|| {
-                struct Destroyer;
-                impl Drop for Destroyer {
-                    fn drop(&mut self) {
-                        panic!("Destructor called");
+        let mut rt = Runtime::new().unwrap();
+        // This leaves the coroutine in there
+        let _ = rt.block_on(future::lazy(|| {
+            Coroutine::new()
+                .cleanup_strategy(CleanupStrategy::LeakAlways)
+                .spawn(|| {
+                    struct Destroyer;
+                    impl Drop for Destroyer {
+                        fn drop(&mut self) {
+                            panic!("Destructor called");
+                        }
                     }
-                }
-                let _d = Destroyer;
-                let _ = Coroutine::wait(future::empty::<(), ()>());
-            })
-            .unwrap();
-        drop(core);
+                    let _d = Destroyer;
+                    let _ = Coroutine::wait(future::empty::<(), ()>());
+                })
+                .unwrap();
+            Ok::<(), ()>(())
+        }));
+        drop(rt);
     }
 
     /// A panic from inside the future doesn't kill the core, but falls out of the wait into the
@@ -597,21 +603,21 @@ mod tests {
     /// polled. So we check it doesn't kill the core.
     #[test]
     fn panic_in_future() {
-        let mut core = Core::new().unwrap();
-        let coroutine = Coroutine::with_defaults(|| {
-            struct PanicFuture;
-            impl Future for PanicFuture {
-                type Item = ();
-                type Error = ();
-                fn poll(&mut self) -> Poll<(), ()> {
-                    panic!("Test");
+        current_thread::block_on_all(future::lazy(|| {
+            Coroutine::with_defaults(|| {
+                struct PanicFuture;
+                impl Future for PanicFuture {
+                    type Item = ();
+                    type Error = ();
+                    fn poll(&mut self) -> Poll<(), ()> {
+                        panic!("Test");
+                    }
                 }
-            }
 
-            if let Ok(_) = panic::catch_unwind(|| Coroutine::wait(PanicFuture)) {
-                panic!("A panic should fall out of wait");
-            }
-        });
-        core.run(coroutine).unwrap();
+                if let Ok(_) = panic::catch_unwind(|| Coroutine::wait(PanicFuture)) {
+                    panic!("A panic should fall out of wait");
+                }
+            })
+        })).unwrap();
     }
 }

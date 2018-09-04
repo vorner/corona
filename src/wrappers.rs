@@ -207,7 +207,8 @@ mod tests {
 
     use futures::stream;
     use futures::sync::mpsc;
-    use tokio_core::reactor::Core;
+    use tokio::prelude::*;
+    use tokio::runtime::current_thread;
 
     use prelude::*;
 
@@ -246,25 +247,25 @@ mod tests {
     /// It needs to switch between the two futures to complete, because not everything fits.
     #[test]
     fn async_sink_sender() {
-        let (mut sender, receiver) = mpsc::channel(1);
-        let mut core = Core::new().unwrap();
-        let sending_fut = Coroutine::with_defaults(move || {
-            let data = vec![1, 2, 3];
-            Coroutine::wait(SinkSender::new(&mut sender, data))
-                .unwrap()
-                .unwrap();
-        });
-        let receiving_fut = Coroutine::with_defaults(move || {
-            let mut result = Vec::new();
-            Coroutine::wait(receiver.for_each(|val| {
-                    result.push(val);
-                    Ok(())
-                }))
-                .unwrap()
-                .unwrap();
-            assert_eq!(vec![1, 2, 3], result);
-        });
-        core.run(receiving_fut).unwrap();
-        core.run(sending_fut).unwrap();
+        current_thread::block_on_all(future::lazy(|| {
+            let (mut sender, receiver) = mpsc::channel(1);
+            let sending_fut = Coroutine::with_defaults(move || {
+                let data = vec![1, 2, 3];
+                Coroutine::wait(SinkSender::new(&mut sender, data))
+                    .unwrap()
+                    .unwrap();
+            });
+            let receiving_fut = Coroutine::with_defaults(move || {
+                let mut result = Vec::new();
+                Coroutine::wait(receiver.for_each(|val| {
+                        result.push(val);
+                        Ok(())
+                    }))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(vec![1, 2, 3], result);
+            });
+            receiving_fut.join(sending_fut)
+        })).unwrap();
     }
 }

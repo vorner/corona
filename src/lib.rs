@@ -275,7 +275,8 @@
 
 extern crate context;
 extern crate futures;
-extern crate tokio_core;
+#[cfg(test)]
+extern crate tokio;
 extern crate tokio_current_thread;
 #[cfg(feature = "blocking-wrappers")]
 extern crate tokio_io;

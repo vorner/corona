@@ -129,7 +129,7 @@ fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
         match attempt {
             Ok((connection, address)) => {
                 eprintln!("Received a connection from {}", address);
-                handle_connection(handle, connection, clients, sender.clone());
+                handle_connection(connection, clients, sender.clone());
             },
             // FIXME: Are all the errors recoverable?
             Err(e) => eprintln!("An error accepting a connection: {}", e),

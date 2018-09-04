@@ -36,5 +36,6 @@ path = "test/tests.rs"
 
 [dev-dependencies]
 bytes = "~0.4"
+tokio = "~0.1"
 tokio-io = "~0.1"
 version-sync = "~0.5"
