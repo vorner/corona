@@ -93,8 +93,6 @@ pub enum CleanupStrategy {
 }
 
 struct CoroutineContext {
-    /// Use this to spawn waiting coroutines
-    handle: Handle,
     /// The context that called us and we'll switch back to it when we wait for something.
     parent_context: Context,
     /// Our own stack. We keep ourselvel alive.
@@ -113,7 +111,6 @@ thread_local! {
 /// both starting them with default parameters and configuring them with the builder pattern.
 #[derive(Clone)]
 pub struct Coroutine {
-    handle: Handle,
     stack_size: usize,
     cleanup_strategy: CleanupStrategy,
 }
@@ -147,9 +144,8 @@ impl Coroutine {
     /// # }
     ///
     /// ```
-    pub fn new(handle: Handle) -> Self {
+    pub fn new() -> Self {
         Coroutine {
-            handle,
             stack_size: Stack::default_size(),
             cleanup_strategy: CleanupStrategy::CleanupAlways,
         }
@@ -218,12 +214,12 @@ impl Coroutine {
     /// # }
     ///
     /// ```
-    pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
+    pub fn with_defaults<R, Task>(task: Task) -> CoroutineResult<R>
     where
         R: 'static,
         Task: FnOnce() -> R + 'static,
     {
-        Coroutine::new(handle).spawn(task).unwrap()
+        Coroutine::new().spawn(task).unwrap()
     }
 
     /// The inner workings of `spawn` and `spawn_catch_panic`.
@@ -235,12 +231,10 @@ impl Coroutine {
     {
         let (sender, receiver) = oneshot::channel();
 
-        let handle = self.handle.clone();
         let cleanup_strategy = self.cleanup_strategy;
 
         let perform = move |context, stack| {
             let my_context = CoroutineContext {
-                handle,
                 parent_context: context,
                 stack,
                 cleanup_strategy,
@@ -417,11 +411,9 @@ impl Coroutine {
                 unsafe { *result = Some(res) };
                 Ok(Async::Ready(()))
             };
-            let handle = my_context.handle.clone();
             let mut task = WaitTask {
                 poll: &mut poll,
                 context: None,
-                handle,
                 cleanup_strategy: my_context.cleanup_strategy,
                 stack: Some(my_context.stack),
             };
@@ -438,7 +430,6 @@ impl Coroutine {
         let new_context = CoroutineContext {
             parent_context: context,
             stack: stack,
-            handle: my_context.handle,
             cleanup_strategy: my_context.cleanup_strategy,
         };
         CONTEXTS.with(|c| c.borrow_mut().push(new_context));
@@ -470,7 +461,7 @@ mod tests {
         let s2c = s2.clone();
         let handle = core.handle();
 
-        let mut builder = Coroutine::new(handle);
+        let mut builder = Coroutine::new();
         builder.stack_size(40960);
         let builder_inner = builder.clone();
 
@@ -499,11 +490,11 @@ mod tests {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
         let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::with_defaults(core.handle(), move || {
+        let all_done = Coroutine::with_defaults(move || {
             let msg = Coroutine::wait(receiver).unwrap().unwrap();
             msg
         });
-        Coroutine::with_defaults(core.handle(), move || {
+        Coroutine::with_defaults(move || {
             let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
             Coroutine::wait(timeout).unwrap().unwrap();
             sender.send(42).unwrap();
@@ -516,12 +507,12 @@ mod tests {
     fn panics_catch() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
-        match core.run(Coroutine::new(handle).spawn_catch_panic(|| panic!("Test")).unwrap()) {
+        match core.run(Coroutine::new().spawn_catch_panic(|| panic!("Test")).unwrap()) {
             Err(TaskFailed::Panicked(_)) => (),
             _ => panic!("Panic not reported properly"),
         }
         let handle = core.handle();
-        assert_eq!(42, core.run(Coroutine::with_defaults(handle, || 42)).unwrap());
+        assert_eq!(42, core.run(Coroutine::with_defaults(|| 42)).unwrap());
     }
 
     /// However, normal coroutines do panic.
@@ -529,14 +520,14 @@ mod tests {
     #[should_panic]
     fn panics_spawn() {
         let core = Core::new().unwrap();
-        let _ = Coroutine::new(core.handle()).spawn(|| panic!("Test"));
+        let _ = Coroutine::new().spawn(|| panic!("Test"));
     }
 
     /// This one panics and the panic is propagated, but after suspension point it is out of run.
     #[test]
     fn panics_run() {
         let mut core = Core::new().unwrap();
-        let coroutine = Coroutine::with_defaults(core.handle(), || {
+        let coroutine = Coroutine::with_defaults(|| {
                 let _ = Coroutine::wait(future::ok::<(), ()>(()));
                 panic!("Test");
             });
@@ -555,7 +546,7 @@ mod tests {
     #[test]
     fn panic_leak() {
         let core = Core::new().unwrap();
-        let _coroutine = Coroutine::new(core.handle())
+        let _coroutine = Coroutine::new()
             .cleanup_strategy(CleanupStrategy::LeakOnPanic)
             .spawn(|| {
                 let _ = Coroutine::wait(future::empty::<(), ()>());
@@ -583,7 +574,7 @@ mod tests {
     #[test]
     fn leak_always() {
         let core = Core::new().unwrap();
-        Coroutine::new(core.handle())
+        Coroutine::new()
             .cleanup_strategy(CleanupStrategy::LeakAlways)
             .spawn(|| {
                 struct Destroyer;
@@ -607,7 +598,7 @@ mod tests {
     #[test]
     fn panic_in_future() {
         let mut core = Core::new().unwrap();
-        let coroutine = Coroutine::with_defaults(core.handle(), || {
+        let coroutine = Coroutine::with_defaults(|| {
             struct PanicFuture;
             impl Future for PanicFuture {
                 type Item = ();

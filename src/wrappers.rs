@@ -248,13 +248,13 @@ mod tests {
     fn async_sink_sender() {
         let (mut sender, receiver) = mpsc::channel(1);
         let mut core = Core::new().unwrap();
-        let sending_fut = Coroutine::with_defaults(core.handle(), move || {
+        let sending_fut = Coroutine::with_defaults(move || {
             let data = vec![1, 2, 3];
             Coroutine::wait(SinkSender::new(&mut sender, data))
                 .unwrap()
                 .unwrap();
         });
-        let receiving_fut = Coroutine::with_defaults(core.handle(), move || {
+        let receiving_fut = Coroutine::with_defaults(move || {
             let mut result = Vec::new();
             Coroutine::wait(receiver.for_each(|val| {
                     result.push(val);

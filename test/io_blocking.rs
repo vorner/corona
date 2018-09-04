@@ -12,9 +12,9 @@ use tokio_io::AsyncRead;
 fn server(handle: Handle) -> SocketAddr {
     let listener = TcpListener::bind(&"127.0.0.1:0".parse().unwrap(), &handle).unwrap();
     let addr = listener.local_addr().unwrap();
-    Coroutine::with_defaults(handle.clone(), move || {
+    Coroutine::with_defaults(move || {
         for (connection, _address) in listener.incoming().iter_ok() {
-            Coroutine::with_defaults(handle.clone(), move || {
+            Coroutine::with_defaults(move || {
                 let (read, write) = connection.split();
                 let read = BufReader::new(BlockingWrapper::new(read));
                 let mut write = BlockingWrapper::new(write);
@@ -51,7 +51,7 @@ fn line_req_resp() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let addr = server(handle.clone());
-    let done = Coroutine::with_defaults(handle.clone(), move || {
+    let done = Coroutine::with_defaults(move || {
             client(&addr, &handle);
         });
     core.run(done).unwrap();

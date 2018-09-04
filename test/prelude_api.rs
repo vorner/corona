@@ -21,7 +21,7 @@ impl Cor {
     fn new() -> Cor {
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let coroutine = Coroutine::new(handle);
+        let coroutine = Coroutine::new();
         Cor {
             core,
             coroutine,

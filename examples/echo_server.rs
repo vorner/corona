@@ -11,13 +11,13 @@ use std::io::BufReader;
 use corona::Coroutine;
 use corona::prelude::*;
 use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::Core;
 use tokio_io::{io as aio, AsyncRead};
 
-fn handle_connection(handle: &Handle, connection: TcpStream) {
+fn handle_connection(connection: TcpStream) {
     let (input, mut output) = connection.split();
     let input = BufReader::new(input);
-    Coroutine::with_defaults(handle.clone(), move || {
+    Coroutine::with_defaults(move || {
         for line in aio::lines(input).iter_result() {
             // If there's an error, kill the current coroutine. That one is not waited on and the
             // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
@@ -37,16 +37,15 @@ fn main() {
     let mut core = Core::new().unwrap();
     let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), &core.handle()).unwrap();
     let incoming = listener.incoming();
-    let handle = core.handle();
 
-    let acceptor = Coroutine::with_defaults(core.handle(), move || {
+    let acceptor = Coroutine::with_defaults(move || {
         // This will accept the connections, but will allow other coroutines to run when there are
         // none ready.
         for attempt in incoming.iter_result() {
             match attempt {
                 Ok((connection, address)) => {
                     println!("Received a connection from {}", address);
-                    handle_connection(&handle, connection);
+                    handle_connection(connection);
                 },
                 // FIXME: Are all the errors recoverable?
                 Err(e) => println!("An error accepting a connection: {}", e),

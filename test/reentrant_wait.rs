@@ -36,7 +36,7 @@ impl Future for ReentrantPoll {
 #[test]
 fn directly_reentrant() {
     let mut core = Core::new().unwrap();
-    let coroutine = Coroutine::new(core.handle())
+    let coroutine = Coroutine::new()
         .spawn_catch_panic(|| {
             ReentrantPoll::default().coro_wait()
         })
@@ -59,13 +59,12 @@ fn directly_reentrant() {
 #[test]
 fn coro_reentrant() {
     let mut core = Core::new().unwrap();
-    let first = Coroutine::new(core.handle())
+    let first = Coroutine::new()
         .spawn_catch_panic(|| {
             ReentrantPoll::default().coro_wait()
         })
         .unwrap();
-    let handle = core.handle();
-    Coroutine::with_defaults(handle, move || {
+    Coroutine::with_defaults(move || {
         core.run(first).unwrap().unwrap();
     });
 }

@@ -61,8 +61,7 @@ impl Encoder for LineEncoder {
 type Client = FramedWrite<WriteHalf<TcpStream>, LineEncoder>;
 type Clients = Rc<RefCell<Vec<Client>>>;
 
-fn handle_connection(handle: &Handle,
-                     connection: TcpStream,
+fn handle_connection(connection: TcpStream,
                      clients: &Clients,
                      mut msgs: Sender<String>)
 {
@@ -70,7 +69,7 @@ fn handle_connection(handle: &Handle,
     let writer = FramedWrite::new(output, LineEncoder);
     clients.borrow_mut().push(writer);
     let input = BufReader::new(BlockingWrapper::new(input));
-    Coroutine::new(handle.clone()).stack_size(32_768).spawn_catch_panic(AssertUnwindSafe(move || {
+    Coroutine::new().stack_size(32_768).spawn_catch_panic(AssertUnwindSafe(move || {
         // If there's an error, kill the current coroutine. That one is not waited on and the
         // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
         // coroutines act.
@@ -146,10 +145,10 @@ fn main() {
     let (sender, receiver) = mpsc::channel(100);
     let clients = Clients::default();
     let clients_rc = Rc::clone(&clients);
-    let broadcaster = Coroutine::with_defaults(core.handle(), move || {
+    let broadcaster = Coroutine::with_defaults(move || {
         broadcaster(receiver, &clients_rc)
     });
-    let acceptor = Coroutine::with_defaults(core.handle(), move || {
+    let acceptor = Coroutine::with_defaults(move || {
         acceptor(&handle, &clients, &sender)
     });
     // Let the acceptor and everything else run.

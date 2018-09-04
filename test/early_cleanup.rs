@@ -43,13 +43,12 @@ fn coroutine_panic(status: &Status) {
 /// yet.
 #[test]
 fn cleanup_panic() {
-    let coroutine_get = |handle, status: Status| {
-            Coroutine::with_defaults(handle, move || coroutine_panic(&status))
+    let coroutine_get = |status: Status| {
+            Coroutine::with_defaults(move || coroutine_panic(&status))
         };
         let core = Core::new().unwrap();
-        let handle = core.handle();
         let status = Status::default();
-        let finished = coroutine_get(core.handle(), status.clone());
+        let finished = coroutine_get(status.clone());
         status.before_drop();
         // When we drop the core, it also drops the future and cleans up the coroutine
         drop(core);
@@ -59,7 +58,7 @@ fn cleanup_panic() {
         // If we start another similar coroutine now, it gets destroyed on the call to the
         // coro_wait right away.
         status.0.set(false);
-        let finished = coroutine_get(handle, status.clone());
+        let finished = coroutine_get(status.clone());
         status.after_drop(true);
         finished.wait().unwrap_err();
 }
@@ -80,7 +79,7 @@ fn cleanup_nopanic() {
     let core = Core::new().unwrap();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(&status_cp));
+    let finished = Coroutine::with_defaults(move || coroutine_nopanic(&status_cp));
 
     status.before_drop();
     // The coroutine finishes once we drop the core. Note that it finishes successfully, not
@@ -96,7 +95,7 @@ fn cleanup_main_panic() {
     let core = Core::new().unwrap();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || coroutine_nopanic(&status_cp));
+    let finished = Coroutine::with_defaults(move || coroutine_nopanic(&status_cp));
     status.before_drop();
     panic_core(core);
     status.after_drop(false);
@@ -126,7 +125,7 @@ fn stream_cleanup() {
     let no_stream = no_stream();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || {
+    let finished = Coroutine::with_defaults(move || {
         status_cp.0.set(true);
         for item in no_stream.iter_cleanup() {
             if item.is_err() {
@@ -149,7 +148,7 @@ fn stream_panic() {
     let no_stream = no_stream();
     let status = Status::default();
     let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(core.handle(), move || {
+    let finished = Coroutine::with_defaults(move || {
         status_cp.0.set(true);
         for _ in no_stream.iter_result() {
             // It'll not get here
