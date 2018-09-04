@@ -64,3 +64,7 @@ There are questions, though:
 
 * Does it make sense to do some kind of fuzzying? How would that work, spawning
   random coroutines that randomly do something and yield?
+
+# Tokio porting
+
+* Allow specifying handle to the runtime/executor (and use the default one by default).
