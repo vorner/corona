@@ -1,5 +1,6 @@
 extern crate corona;
 extern crate futures;
+extern crate tokio;
 extern crate tokio_core;
 #[cfg(feature = "blocking-wrappers")]
 extern crate tokio_io;

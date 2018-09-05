@@ -2,45 +2,33 @@ extern crate corona;
 extern crate futures;
 extern crate tokio_core;
 
-use std::fmt::Debug;
-
-use futures::{future, stream, Future};
+use futures::{future, stream};
 use futures::sync::mpsc;
-use tokio_core::reactor::Core;
+use tokio::runtime::current_thread::{self, Runtime};
 
 use corona::Coroutine;
 use corona::prelude::*;
 
 /// A coroutine test fixture, for convenience and shared methods.
 struct Cor {
-    core: Core,
     coroutine: Coroutine,
+    runtime: Runtime,
 }
 
 impl Cor {
     fn new() -> Cor {
-        let core = Core::new().unwrap();
-        let handle = core.handle();
+        let runtime = Runtime::new().unwrap();
         let coroutine = Coroutine::new();
         Cor {
-            core,
             coroutine,
+            runtime,
         }
-    }
-    /// Checks that the future resolves to 42
-    fn ft<E, F>(&mut self, f: F)
-    where
-        E: Debug,
-        F: Future<Item = u32, Error = E>
-    {
-        assert_eq!(42, self.core.run(f).unwrap());
     }
     /// Starts a coroutine containing F and checks it returns 42
     fn cor_ft<F: FnOnce() -> u32 + 'static>(&mut self, f: F) {
-        let coro = self.coroutine
-            .spawn(f)
-            .unwrap();
-        self.ft(coro);
+        let coroutine = self.coroutine.clone();
+        let result = self.runtime.block_on(future::lazy(move || coroutine.spawn(f).unwrap()));
+        assert_eq!(42, result.unwrap());
     }
 }
 
@@ -92,18 +80,17 @@ fn reference() {
 /// Pushing things into a sink, which must switch between the coroutines.
 #[test]
 fn push_sink() {
-    let mut cor = Cor::new();
-    let (mut sender, receiver) = mpsc::channel(1);
-    let producer = cor.coroutine.spawn(move || {
+    let sum = current_thread::block_on_all(future::lazy(|| {
+        let (mut sender, receiver) = mpsc::channel(1);
+        Coroutine::with_defaults(move || {
             sender.coro_send(2).unwrap();
             sender.coro_send_many(vec![20, 20]).unwrap().unwrap();
+        });
+        Coroutine::with_defaults(move || {
+            receiver.iter_ok().sum()
         })
-        .unwrap();
-    cor.cor_ft(move || {
-        receiver.iter_ok().sum()
-    });
-    // The producer is done by now
-    producer.wait().unwrap();
+    })).unwrap();
+    assert_eq!(42, sum);
 }
 
 /// Taking one thing out of a stream

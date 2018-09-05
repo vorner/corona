@@ -5,15 +5,15 @@ use std::net::SocketAddr;
 
 use corona::prelude::*;
 use corona::io::BlockingWrapper;
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Handle};
-use tokio_io::AsyncRead;
+use tokio::runtime::current_thread::Runtime;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::prelude::*;
 
-fn server(handle: Handle) -> SocketAddr {
-    let listener = TcpListener::bind(&"127.0.0.1:0".parse().unwrap(), &handle).unwrap();
+fn server() -> SocketAddr {
+    let listener = TcpListener::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = listener.local_addr().unwrap();
     Coroutine::with_defaults(move || {
-        for (connection, _address) in listener.incoming().iter_ok() {
+        for connection in listener.incoming().iter_ok() {
             Coroutine::with_defaults(move || {
                 let (read, write) = connection.split();
                 let read = BufReader::new(BlockingWrapper::new(read));
@@ -30,8 +30,8 @@ fn server(handle: Handle) -> SocketAddr {
     addr
 }
 
-fn client(addr: &SocketAddr, handle: &Handle) {
-    let connection = TcpStream::connect(addr, handle)
+fn client(addr: &SocketAddr) {
+    let connection = TcpStream::connect(addr)
         .coro_wait()
         .unwrap();
     let mut connection = BlockingWrapper::new(connection);
@@ -48,11 +48,11 @@ fn client(addr: &SocketAddr, handle: &Handle) {
 /// The test runs a listener, makes a single connection and exchanges a line there and back.
 #[test]
 fn line_req_resp() {
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-    let addr = server(handle.clone());
-    let done = Coroutine::with_defaults(move || {
-            client(&addr, &handle);
-        });
-    core.run(done).unwrap();
+    let mut rt = Runtime::new().unwrap();
+    rt.block_on(future::lazy(|| {
+        let addr = server();
+        Coroutine::with_defaults(move || {
+            client(&addr);
+        })
+    })).unwrap();
 }
