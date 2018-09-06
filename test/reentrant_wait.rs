@@ -5,8 +5,8 @@
 //! one to go.
 
 use corona::prelude::*;
-use futures::{Async, Future, Poll};
-use tokio_core::reactor::Core;
+use tokio::prelude::*;
+use tokio::runtime::current_thread;
 
 #[derive(Debug, Default)]
 struct ReentrantPoll {
@@ -35,36 +35,10 @@ impl Future for ReentrantPoll {
 /// The panic prevents any potential problems caused by this.
 #[test]
 fn directly_reentrant() {
-    let mut core = Core::new().unwrap();
-    let coroutine = Coroutine::new()
-        .spawn_catch_panic(|| {
-            ReentrantPoll::default().coro_wait()
-        })
-        .unwrap();
-    // It is expected the coroutine panics
-    core.run(coroutine).unwrap_err();
-}
-
-/// We try to cheat the restriction of waiting outside of a coroutine.
-///
-/// We place the core into a coroutine itself. Unfortunately, the suspension point inside the
-/// `core.run` leads to a deadlockish situation ‒ the second coroutine will never resume and won't
-/// be finished.
-///
-/// Any idea how to cheat the deadlock thing?
-///
-/// Still, even if it did resolve, the only thing it could do is to create multiple `Task` wrappers
-/// around the same future and call it from multiple tasks, which is also legal (though most likely
-/// not what you want).
-#[test]
-fn coro_reentrant() {
-    let mut core = Core::new().unwrap();
-    let first = Coroutine::new()
-        .spawn_catch_panic(|| {
-            ReentrantPoll::default().coro_wait()
-        })
-        .unwrap();
-    Coroutine::with_defaults(move || {
-        core.run(first).unwrap().unwrap();
-    });
+    current_thread::block_on_all(future::lazy(|| {
+        Coroutine::new()
+            .spawn_catch_panic(|| {
+                ReentrantPoll::default().coro_wait()
+            }).unwrap()
+    })).unwrap_err(); // It is expected the coroutine panics
 }
