@@ -8,7 +8,7 @@ use std::thread;
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use futures::{Async, Future, Poll};
-use tokio_current_thread;
+use tokio_current_thread::TaskExecutor;
 
 use coroutine::CleanupStrategy;
 use errors::StackError;
@@ -239,7 +239,9 @@ impl Switch {
             },
             WaitFuture { mut task } => {
                 task.context = Some(context);
-                tokio_current_thread::spawn(task);
+                // Ignore the result. In case an error happens, the task gets dropped and it can
+                // already handle that.
+                let _ = TaskExecutor::current().spawn_local(Box::new(task));
             },
             _ => unreachable!("Invalid switch instruction when switching out"),
         }

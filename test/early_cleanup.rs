@@ -2,12 +2,9 @@ use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
-use corona::Coroutine;
 use corona::prelude::*;
-use futures::{self, Future, Stream};
-use futures::future;
-use futures::stream;
-use tokio_core::reactor::Core;
+use tokio::prelude::*;
+use tokio::runtime::current_thread::Runtime;
 
 #[derive(Clone, Default)]
 struct Status(Rc<Cell<bool>>, Rc<Cell<bool>>);
@@ -28,8 +25,8 @@ impl Status {
     }
 }
 
-fn fut_get() -> Box<Future<Item = (), Error = ()>> {
-    Box::new(future::lazy(|| Ok::<_, ()>(())))
+fn fut_get() -> impl Future<Item = (), Error = ()> {
+    future::empty()
 }
 
 fn coroutine_panic(status: &Status) {
@@ -43,24 +40,19 @@ fn coroutine_panic(status: &Status) {
 /// yet.
 #[test]
 fn cleanup_panic() {
-    let coroutine_get = |status: Status| {
-            Coroutine::with_defaults(move || coroutine_panic(&status))
-        };
-        let core = Core::new().unwrap();
-        let status = Status::default();
-        let finished = coroutine_get(status.clone());
-        status.before_drop();
-        // When we drop the core, it also drops the future and cleans up the coroutine
-        drop(core);
-        status.after_drop(true);
-        finished.wait().unwrap_err();
-
-        // If we start another similar coroutine now, it gets destroyed on the call to the
-        // coro_wait right away.
-        status.0.set(false);
-        let finished = coroutine_get(status.clone());
-        status.after_drop(true);
-        finished.wait().unwrap_err();
+    let mut rt = Runtime::new().unwrap();
+    let mut finished = None;
+    let status = Status::default();
+    // This starts the coroutine, spawns waiting onto the executor, but doesn't finish.
+    rt.block_on(future::lazy(|| {
+        let status = status.clone();
+        finished = Some(Coroutine::with_defaults(move || coroutine_panic(&status)));
+        future::ok::<(), ()>(())
+    })).unwrap();
+    status.before_drop();
+    drop(rt);
+    status.after_drop(true);
+    finished.wait().unwrap_err();
 }
 
 fn coroutine_nopanic(status: &Status) {
@@ -68,7 +60,6 @@ fn coroutine_nopanic(status: &Status) {
     status.0.set(true);
     fut.coro_wait_cleanup().unwrap_err();
     status.1.set(true);
-    // Another one still returns error
     let fut2 = fut_get();
     fut2.coro_wait_cleanup().unwrap_err();
 }
@@ -76,38 +67,46 @@ fn coroutine_nopanic(status: &Status) {
 /// Check cleaning up with manual handling of being dropped.
 #[test]
 fn cleanup_nopanic() {
-    let core = Core::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let status = Status::default();
-    let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(move || coroutine_nopanic(&status_cp));
-
+    let mut finished = None;
+    rt.block_on(future::lazy(|| {
+        let status = status.clone();
+        finished = Some(Coroutine::with_defaults(move || coroutine_nopanic(&status)));
+        future::ok::<(), ()>(())
+    })).unwrap();
     status.before_drop();
-    // The coroutine finishes once we drop the core. Note that it finishes successfully, not
+    // The coroutine finishes once we drop the runtime. Note that it finishes successfully, not
     // panicking.
-    drop(core);
-    status.after_drop(false);
+    drop(rt);
     finished.wait().unwrap();
+    status.after_drop(false);
 }
 
 /// The cleanup method handles panicking in the main thread correctly.
 #[test]
 fn cleanup_main_panic() {
-    let core = Core::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let status = Status::default();
-    let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(move || coroutine_nopanic(&status_cp));
+    let mut finished = None;
+    rt.block_on(future::lazy(|| {
+        let status = status.clone();
+        finished = Some(Coroutine::with_defaults(move || coroutine_nopanic(&status)));
+        future::ok::<(), ()>(())
+    })).unwrap();
     status.before_drop();
-    panic_core(core);
+    panic_rt(rt);
     status.after_drop(false);
     finished.wait().unwrap();
 }
 
-/// Make the core go away by panicking inside a closure that holds it
-fn panic_core(core: Core) {
+/// Make the runtime go away by panicking inside a closure that holds it. We check clean up during
+/// dropping things.
+fn panic_rt(rt: Runtime) {
     panic::catch_unwind(AssertUnwindSafe(|| {
-            // Steal the core into the closure
-            let _core = core;
-            // And panic here, so the core gets destroyed during an unwind
+            // Steal the rt into the closure
+            let _rt = rt;
+            // And panic here, so the rt gets destroyed during an unwind
             panic!();
         }))
         .unwrap_err();
@@ -115,28 +114,31 @@ fn panic_core(core: Core) {
 
 /// Just a testing stream.
 fn no_stream() -> Box<Stream<Item = (), Error = ()>> {
-    Box::new(stream::futures_unordered(vec![futures::empty::<(), ()>()]))
+    Box::new(stream::futures_unordered(vec![future::empty::<(), ()>()]))
 }
 
-/// Tests the explicit no-panic cleanup of a coroutine blocked on a stream.
 #[test]
 fn stream_cleanup() {
-    let core = Core::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let no_stream = no_stream();
     let status = Status::default();
-    let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(move || {
-        status_cp.0.set(true);
-        for item in no_stream.iter_cleanup() {
-            if item.is_err() {
-                status_cp.1.set(true);
-                return;
+    let mut finished = None;
+    rt.block_on(future::lazy(|| {
+        let status = status.clone();
+        finished = Some(Coroutine::with_defaults(move || {
+            status.0.set(true);
+            for item in no_stream.iter_cleanup() {
+                if item.is_err() {
+                    status.1.set(true);
+                    return;
+                }
             }
-        }
-        unreachable!();
-    });
+            unreachable!();
+        }));
+        future::ok::<(), ()>(())
+    })).unwrap();
     status.before_drop();
-    panic_core(core);
+    panic_rt(rt);
     status.after_drop(false);
     finished.wait().unwrap();
 }
@@ -144,21 +146,25 @@ fn stream_cleanup() {
 /// Tests the implicit panic-based cleanup of a stream
 #[test]
 fn stream_panic() {
-    let core = Core::new().unwrap();
+    let mut rt = Runtime::new().unwrap();
     let no_stream = no_stream();
     let status = Status::default();
-    let status_cp = status.clone();
-    let finished = Coroutine::with_defaults(move || {
-        status_cp.0.set(true);
-        for _ in no_stream.iter_result() {
-            // It'll not get here
-            status_cp.1.set(true);
-        }
-        // And it'll not get here
-        status_cp.1.set(true);
-    });
+    let mut finished = None;
+    rt.block_on(future::lazy(|| {
+        let status = status.clone();
+        finished = Some(Coroutine::with_defaults(move || {
+            status.0.set(true);
+            for _ in no_stream.iter_result() {
+                // It'll not get here
+                status.1.set(true);
+            }
+            // And it'll not get here
+            status.1.set(true);
+        }));
+        future::ok::<(), ()>(())
+    })).unwrap();
     status.before_drop();
-    drop(core);
+    drop(rt);
     status.after_drop(true);
     finished.wait().unwrap_err();
 }
