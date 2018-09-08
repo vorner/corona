@@ -19,8 +19,7 @@
 extern crate bytes;
 extern crate corona;
 extern crate futures;
-extern crate tokio_core;
-extern crate tokio_io;
+extern crate tokio;
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Error as IoError};
@@ -35,11 +34,9 @@ use corona::prelude::*;
 use corona::wrappers::SinkSender;
 use futures::{future, Future};
 use futures::unsync::mpsc::{self, Sender, Receiver};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Handle};
-use tokio_io::AsyncRead;
-use tokio_io::io::WriteHalf;
-use tokio_io::codec::{Encoder, FramedWrite};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, WriteHalf};
+use tokio::codec::{Encoder, FramedWrite};
 
 /// Encoder turning strings into lines.
 ///
@@ -69,7 +66,7 @@ fn handle_connection(connection: TcpStream,
     let writer = FramedWrite::new(output, LineEncoder);
     clients.borrow_mut().push(writer);
     let input = BufReader::new(BlockingWrapper::new(input));
-    Coroutine::new().stack_size(32_768).spawn_catch_panic(AssertUnwindSafe(move || {
+    Coroutine::from_thread_local().spawn_catch_panic(AssertUnwindSafe(move || {
         // If there's an error, kill the current coroutine. That one is not waited on and the
         // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
         // coroutines act.
@@ -120,15 +117,14 @@ fn broadcaster(msgs: Receiver<String>, clients: &Clients) {
     }
 }
 
-fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
-    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), handle).unwrap();
-    let incoming = listener.incoming();
+fn acceptor(clients: &Clients, sender: &Sender<String>) {
+    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap()).unwrap();
     // This will accept the connections, but will allow other coroutines to run when there are
     // none ready.
-    for attempt in incoming.iter_result() {
+    for attempt in listener.incoming().iter_result() {
         match attempt {
-            Ok((connection, address)) => {
-                eprintln!("Received a connection from {}", address);
+            Ok(connection) => {
+                eprintln!("Received a connection");
                 handle_connection(connection, clients, sender.clone());
             },
             // FIXME: Are all the errors recoverable?
@@ -138,20 +134,11 @@ fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
 }
 
 fn main() {
-    // Set up of the listening socket
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
-    let (sender, receiver) = mpsc::channel(100);
-    let clients = Clients::default();
-    let clients_rc = Rc::clone(&clients);
-    let broadcaster = Coroutine::with_defaults(move || {
-        broadcaster(receiver, &clients_rc)
-    });
-    let acceptor = Coroutine::with_defaults(move || {
-        acceptor(&handle, &clients, &sender)
-    });
-    // Let the acceptor and everything else run.
-    // Propagate all panics from the coroutine to the main thread with the unwrap
-    core.run(broadcaster.join(acceptor)).unwrap();
+    Coroutine::new().stack_size(32_768).run(|| {
+        let (sender, receiver) = mpsc::channel(100);
+        let clients = Clients::default();
+        let clients_rc = Rc::clone(&clients);
+        corona::spawn(move || broadcaster(receiver, &clients_rc));
+        acceptor(&clients, &sender);
+    }).expect("Wrong stack size");
 }

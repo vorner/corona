@@ -24,7 +24,6 @@ extern crate net2;
 extern crate num_cpus;
 extern crate test;
 extern crate tokio;
-extern crate tokio_io;
 
 use std::env;
 use std::io::{Read, Write};
@@ -45,7 +44,7 @@ use net2::TcpBuilder;
 use tokio::runtime::current_thread;
 use tokio::net::TcpListener as TokioTcpListener;
 use tokio::reactor::Handle;
-use tokio_io::io;
+use tokio::io;
 use test::Bencher;
 
 const BUF_SIZE: usize = 512;

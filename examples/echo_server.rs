@@ -3,21 +3,19 @@
 //! It listens on port 1234 and sends each line back. It handles multiple clients concurrently.
 
 extern crate corona;
-extern crate tokio_core;
-extern crate tokio_io;
+extern crate tokio;
 
 use std::io::BufReader;
 
-use corona::Coroutine;
 use corona::prelude::*;
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::Core;
-use tokio_io::{io as aio, AsyncRead};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io as aio;
+use tokio::io::AsyncRead;
 
 fn handle_connection(connection: TcpStream) {
     let (input, mut output) = connection.split();
     let input = BufReader::new(input);
-    Coroutine::with_defaults(move || {
+    corona::spawn(move || {
         for line in aio::lines(input).iter_result() {
             // If there's an error, kill the current coroutine. That one is not waited on and the
             // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
@@ -33,26 +31,17 @@ fn handle_connection(connection: TcpStream) {
 }
 
 fn main() {
-    // Set up of the listening socket
-    let mut core = Core::new().unwrap();
-    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), &core.handle()).unwrap();
-    let incoming = listener.incoming();
-
-    let acceptor = Coroutine::with_defaults(move || {
-        // This will accept the connections, but will allow other coroutines to run when there are
-        // none ready.
-        for attempt in incoming.iter_result() {
+    Coroutine::new().run(|| {
+        // Set up of the listening socket
+        let listener = TcpListener::bind(&"[::]:1234".parse().unwrap()).unwrap();
+        for attempt in listener.incoming().iter_result() {
             match attempt {
-                Ok((connection, address)) => {
-                    println!("Received a connection from {}", address);
+                Ok(connection) => {
+                    println!("Received a connection");
                     handle_connection(connection);
                 },
-                // FIXME: Are all the errors recoverable?
                 Err(e) => println!("An error accepting a connection: {}", e),
             }
         }
-    });
-    // Let the acceptor and everything else run.
-    // Propagate all panics from the coroutine to the main thread with the unwrap
-    core.run(acceptor).unwrap();
+    }).unwrap();
 }
