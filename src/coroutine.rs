@@ -41,16 +41,17 @@ impl<R> Future for CoroutineResult<R> {
     }
 }
 
-/// Controls how a cleanup happens if the driving `core` is dropped while a coroutine lives.
+/// Controls how a cleanup happens if the driving executor is dropped while a coroutine lives.
 ///
-/// If a core is dropped and there is a coroutine that haven't finished yet, there's no chance for
-/// it to make further progress and it becomes orphaned. The question is how to go about cleaning
-/// it up, as there's a stack allocated somewhere, full of data that may need a destructor run.
+/// If an executor is dropped and there is a coroutine that haven't finished yet, there's no chance
+/// for it to make further progress and it becomes orphaned. The question is how to go about
+/// cleaning it up, as there's a stack allocated somewhere, full of data that may need a destructor
+/// run.
 ///
 /// Some primitives for waiting for a future resolution in the coroutine return an error in such
 /// case, but most of them panic ‒ panicking in the stack does exactly what is needed.
 ///
-/// However, there are problems when the core is dropped due to a panic itself ‒ then this would
+/// However, there are problems when the executor is dropped due to a panic itself ‒ then this would
 /// double panic and abort the whole program.
 ///
 /// This describes a strategy taken for the cleaning up of a coroutine (configured with
@@ -70,14 +71,14 @@ pub enum CleanupStrategy {
     ///
     /// This is probably a good idea when panics lead to program termination anyway ‒ that way a
     /// better error message is output if only one panic happens.
-    ///
-    /// It may also be appropriate if your application is compiled with `panic = "abort"`.
     LeakOnPanic,
     /// Do not perform any cleanup.
     ///
-    /// This is suitable if you never drop the core until the end of the program. This doesn't
+    /// This is suitable if you never drop the executor until the end of the program. This doesn't
     /// perform the cleanup at all. This may lead to destructors not being run, which may lead to
     /// effects like files not being flushed.
+    ///
+    /// It may also be appropriate if your application is compiled with `panic = "abort"`.
     LeakAlways,
     /// Perform a cleanup in normal situation, abort if already panicking.
     ///
@@ -86,15 +87,15 @@ pub enum CleanupStrategy {
     AbortOnPanic,
     /// Abort on any attempt to drop a living coroutine.
     ///
-    /// This is mostly for completeness sake, but it may make some sense if you're sure the core is
-    /// never dropped while coroutines live.
+    /// This is mostly for completeness sake, but it may make some sense if you're sure the
+    /// executor is never dropped while coroutines live.
     AbortAlways,
 }
 
 struct CoroutineContext {
     /// The context that called us and we'll switch back to it when we wait for something.
     parent_context: Context,
-    /// Our own stack. We keep ourselvel alive.
+    /// Our own stack. We keep ourselves alive.
     stack: ProtectedFixedSizeStack,
     /// How do we clean up the coroutine if it doesn't end before dropping the core?
     cleanup_strategy: CleanupStrategy,
@@ -102,13 +103,14 @@ struct CoroutineContext {
 
 thread_local! {
     static CONTEXTS: RefCell<Vec<CoroutineContext>> = RefCell::new(Vec::new());
+    static BUILDER: RefCell<Coroutine> = RefCell::new(Coroutine::new());
 }
 
 /// A builder of coroutines.
 ///
 /// This struct is the main entry point and a way to start coroutines of various kinds. It allows
 /// both starting them with default parameters and configuring them with the builder pattern.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Coroutine {
     stack_size: usize,
     cleanup_strategy: CleanupStrategy,
@@ -122,24 +124,20 @@ impl Coroutine {
     ///
     /// It is possible to spawn multiple coroutines from the same builder.
     ///
-    /// # Parameters
-    ///
-    /// * `handle`: The coroutines need a reactor core to run on and schedule their control
-    ///   switches. This is the handle to the reactor core to be used.
-    ///
     /// # Examples
     ///
     /// ```
     /// # extern crate corona;
-    /// # extern crate tokio_core;
+    /// # extern crate tokio;
     /// use corona::Coroutine;
-    /// use tokio_core::reactor::Core;
+    /// use tokio::prelude::*;
+    /// use tokio::runtime::current_thread;
     ///
     /// # fn main() {
-    /// let core = Core::new().unwrap();
-    /// let builder = Coroutine::new(core.handle());
-    ///
-    /// let coroutine = builder.spawn(|| { });
+    /// current_thread::block_on_all(future::lazy(|| {
+    ///     let builder = Coroutine::new();
+    ///     builder.spawn(|| { }).unwrap()
+    /// })).unwrap();
     /// # }
     ///
     /// ```
@@ -162,7 +160,7 @@ impl Coroutine {
     ///
     /// # Parameters
     ///
-    /// * `size`: The stack size to use for newly spawned coroutines.
+    /// * `size`: The stack size to use for newly spawned coroutines, in bytes.
     pub fn stack_size(&mut self, size: usize) -> &mut Self {
         self.stack_size = size;
         self
@@ -187,8 +185,6 @@ impl Coroutine {
     ///
     /// # Parameters
     ///
-    /// * `handle`: Handle to the reactor the coroutine will use to suspend its execution and wait
-    ///   for events.
     /// * `task`: The closure to run inside the coroutine.
     ///
     /// # Returns
@@ -200,16 +196,15 @@ impl Coroutine {
     ///
     /// ```rust
     /// # extern crate corona;
-    /// # extern crate tokio_core;
+    /// # extern crate tokio;
     /// use corona::Coroutine;
-    /// use tokio_core::reactor::Core;
+    /// use tokio::prelude::*;
+    /// use tokio::runtime::current_thread;
     ///
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
-    ///
-    /// let coroutine = Coroutine::with_defaults(core.handle(), || { });
-    ///
-    /// core.run(coroutine).unwrap();
+    /// current_thread::block_on_all(future::lazy(|| {
+    ///     Coroutine::with_defaults(|| {})
+    /// })).unwrap();
     /// # }
     ///
     /// ```
@@ -283,24 +278,23 @@ impl Coroutine {
     ///
     /// ```rust
     /// # extern crate corona;
-    /// # extern crate tokio_core;
+    /// # extern crate tokio;
     /// use corona::Coroutine;
-    /// use tokio_core::reactor::Core;
+    /// use tokio::prelude::*;
+    /// use tokio::runtime::current_thread;
     ///
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
-    ///
-    /// let coroutine = Coroutine::new(core.handle())
-    ///     .stack_size(40_960)
-    ///     .spawn(|| { }).unwrap();
-    ///
-    /// core.run(coroutine).unwrap();
+    /// current_thread::block_on_all(future::lazy(|| {
+    ///     Coroutine::new()
+    ///         .stack_size(40_960)
+    ///         .spawn(|| { }).unwrap()
+    /// })).unwrap();
     /// # }
     /// ```
     ///
     /// # Panic handling
     ///
-    /// If the coroutine panics, the panic is propagated. This usually means the `core.run`, unless
+    /// If the coroutine panics, the panic is propagated. This usually means the executor, unless
     /// the panic happens before the first suspension point, in which case it is the `spawn` itself
     /// which panics.
     pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
@@ -342,8 +336,8 @@ impl Coroutine {
     ///
     /// # Returns
     ///
-    /// * `Ok(result)` with the result the future resolved to.
-    /// * `Err(Dropped)` when the reactor was dropped before the future had a chance to resolve.
+    /// * `Ok(result)` with the result the future resolved to (which is in itself a `Result`).
+    /// * `Err(Dropped)` when the executor was dropped before the future had a chance to resolve.
     ///
     /// # Panics
     ///
@@ -437,6 +431,99 @@ impl Coroutine {
             Err(panic) => panic::resume_unwind(panic),
         }
     }
+
+    /// Checks if the current configuration is able spawn coroutines.
+    ///
+    /// The ability of a configuration is deterministic on the given system. Therefore, it is
+    /// possible to check if further coroutines spawned by this builder would succeed. This does
+    /// the check.
+    pub fn verify(&self) -> Result<(), StackError> {
+        // Try to spawn empty coroutine. That'd create the stack, etc, but there are no suspension
+        // points in it, so it's safe even outside of the executor.
+        self.spawn(|| ()).map(|_| ())
+    }
+
+    /// Puts the builder into a thread-local storage.
+    ///
+    /// This first verifies (see [`verify`](#method.verify)) the configuration in the builder is
+    /// usable and then sets it into a thread-local storage.
+    ///
+    /// The thread-local storage is then used by the [`spawn`](fn.spawn.html) stand-alone function
+    /// (in contrast to the [`spawn`](#method.spawn) method).
+    ///
+    /// If the verification fails, the original value is preserved. If not called, the thread-local
+    /// storage contains a default configuration created by [`Coroutine::new`](#method.new).
+    pub fn set_thread_local(&self) -> Result<(), StackError> {
+        self.verify()?;
+        BUILDER.with(|builder| builder.replace(self.clone()));
+        Ok(())
+    }
+
+    /// Starts a whole runtime and waits for a main coroutine.
+    ///
+    /// While it is possible to create the `tokio::runtime::current_thread::Runtime` manually, feed
+    /// it with a lazy future and then run a coroutine inside it (or reuse the runtime when
+    /// something else creates it), this method is provided to take care of all these things,
+    /// making it more convenient.
+    ///
+    /// In addition to starting the main coroutine passed to it, it sets the coroutine builder into
+    /// a thread-local storage (see [`set_thread_local`](#method.set_thread_local).
+    ///
+    /// ```rust
+    /// extern crate corona;
+    /// extern crate tokio;
+    ///
+    /// use corona::prelude::*;
+    /// use corona::spawn;
+    /// use tokio::prelude::*;
+    ///
+    /// let result = Coroutine::new()
+    ///     // 40kB of stack size for all the coroutines.
+    ///     .stack_size(40960)
+    ///     .run(|| {
+    ///         // Everything (builder in thread local storage, coroutine, tokio runtime) is set up
+    ///         // in here.
+    ///         future::ok::<(), ()>(()).coro_wait();
+    ///         let sub_coroutine = spawn(|| {
+    ///             42
+    ///         });
+    ///         sub_coroutine.coro_wait().unwrap()
+    ///     }).unwrap();
+    /// assert_eq!(42, result);
+    /// ```
+    #[cfg(feature = "convenient-run")]
+    pub fn run<R, Task>(&self, task: Task) -> Result<R, StackError>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + 'static,
+    {
+        self.set_thread_local()?;
+        let result = ::tokio::runtime::current_thread::block_on_all(::futures::future::lazy(|| {
+            spawn(task)
+        })).expect("Lost a coroutine when waiting for all of them");
+        Ok(result)
+    }
+}
+
+impl Default for Coroutine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Spawns a new coroutine.
+///
+/// This is very similar to [`Coroutine::spawn`](struct.Coroutine.html#method.spawn), but it uses
+/// the coroutine builder in thread local storage (see
+/// [`Coroutine::set_thread_local`](struct.Coroutine.html#method.set_thread_local)). This exists
+/// merely as a convenience.
+pub fn spawn<R, Task>(task: Task) -> CoroutineResult<R>
+where
+    R: 'static,
+    Task: FnOnce() -> R + 'static,
+{
+    BUILDER.with(|builder| builder.borrow().spawn(task))
+        .expect("Unverified builder in thread local storage")
 }
 
 #[cfg(test)]
@@ -482,6 +569,15 @@ mod tests {
         // The result gets propagated through.
         let extract = result.and_then(|r| r);
         assert_eq!(42, current_thread::block_on_all(extract).unwrap());
+    }
+
+    #[test]
+    fn coroutine_run() {
+        let result = Coroutine::new().run(|| {
+            Coroutine::wait(future::ok::<(), ()>(())).unwrap().unwrap();
+            42
+        }).unwrap();
+        assert_eq!(42, result);
     }
 
     /// Wait for a future to complete.

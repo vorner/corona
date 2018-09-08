@@ -20,12 +20,14 @@ maintenance = { status = "actively-developed" }
 members = ["benchmarks"]
 
 [features]
-default = ["blocking-wrappers"]
+default = ["blocking-wrappers", "convenient-run"]
 blocking-wrappers = ["tokio-io"]
+convenient-run = ["tokio"]
 
 [dependencies]
 context = ">=2.1"
 futures = "~0.1"
+tokio = { version = "~0.1", optional = true }
 tokio-current-thread = "~0.1"
 tokio-core = "~0.1"
 tokio-io = { version = "~0.1", optional = true }
