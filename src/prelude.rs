@@ -24,13 +24,7 @@ pub use coroutine::Coroutine;
 ///
 /// This is auto-implemented for everything that implements the `Future` trait, attaching more
 /// methods to them.
-pub trait CoroutineFuture: Sized {
-    /// The item produced by the future.
-    type Item;
-
-    /// The error produced by the future.
-    type Error;
-
+pub trait CoroutineFuture: Future + Sized {
     /// A coroutine aware wait on the result.
     ///
     /// This blocks the current coroutine until the future resolves and returns the result. This is
@@ -51,20 +45,18 @@ pub trait CoroutineFuture: Sized {
     ///
     /// ```rust
     /// # extern crate corona;
-    /// # extern crate tokio_core;
+    /// # extern crate tokio;
     /// # use std::time::Duration;
     /// # use corona::prelude::*;
-    /// # use tokio_core::reactor::{Core, Timeout};
+    /// # use tokio::clock;
+    /// # use tokio::timer::Delay;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
-    /// let handle = core.handle();
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+    /// Coroutine::new().run(move || {
+    ///     let timeout = Delay::new(clock::now() + Duration::from_millis(50));
     ///     // This would switch to another coroutine if there was one ready.
     ///     // We unwrap, since the error doesn't happen on timeouts.
     ///     timeout.coro_wait().unwrap();
     /// });
-    /// core.run(coro).unwrap();
     /// # }
     /// ```
     fn coro_wait(self) -> Result<Self::Item, Self::Error> {
@@ -84,10 +76,8 @@ pub trait CoroutineFuture: Sized {
     fn coro_wait_cleanup(self) -> Result<Result<Self::Item, Self::Error>, Dropped>;
 }
 
-impl<I, E, F: Future<Item = I, Error = E>> CoroutineFuture for F {
-    type Item = I;
-    type Error = E;
-    fn coro_wait_cleanup(self) -> Result<Result<I, E>, Dropped> {
+impl<F: Future> CoroutineFuture for F {
+    fn coro_wait_cleanup(self) -> Result<Result<Self::Item, Self::Error>, Dropped> {
         Coroutine::wait(self)
     }
 }
@@ -96,14 +86,7 @@ impl<I, E, F: Future<Item = I, Error = E>> CoroutineFuture for F {
 ///
 /// This is auto-implemented for `Stream`s and adds some convenient coroutine-aware methods to
 /// them.
-pub trait CoroutineStream: Sized {
-
-    /// The item yielded by the stream.
-    type Item;
-
-    /// The error that can be produced by the stream.
-    type Error;
-
+pub trait CoroutineStream: Stream + Sized {
     /// Produces an iterator through the successful items of the stream.
     ///
     /// This allows iterating comfortably through the stream. It produces only the successful
@@ -127,26 +110,23 @@ pub trait CoroutineStream: Sized {
     /// ```rust
     /// # extern crate corona;
     /// # extern crate futures;
-    /// # extern crate tokio_core;
     /// # use corona::prelude::*;
     /// # use futures::unsync::mpsc;
-    /// # use tokio_core::reactor::Core;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
     /// let (sender, receiver) = mpsc::unbounded();
     /// sender.unbounded_send(21);
     /// sender.unbounded_send(21);
     /// // Make sure the channel is terminated, or it would wait forever.
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
+    /// let result = Coroutine::new().run(move || {
     ///     let mut sum = 0;
     ///     for num in receiver.iter_ok() {
     ///         sum += num;
     ///     }
     ///     sum
     /// });
-    /// assert_eq!(42, core.run(coro).unwrap());
+    /// assert_eq!(42, result.unwrap());
     /// # }
     /// ```
     fn iter_ok(self) -> OkIterator<CleanupIterator<Self>> {
@@ -157,7 +137,7 @@ pub trait CoroutineStream: Sized {
     ///
     /// This is similar to [`iter_ok`](#method.iter_ok). However, instead of terminating on errors,
     /// the items produced by the iterator are complete `Result`s. The iterator always runs to the
-    /// end of the stream (or breaked out of the `for`).
+    /// end of the stream (or break out of the `for`).
     ///
     /// # Notes
     ///
@@ -181,26 +161,23 @@ pub trait CoroutineStream: Sized {
     /// ```rust
     /// # extern crate corona;
     /// # extern crate futures;
-    /// # extern crate tokio_core;
     /// # use corona::prelude::*;
     /// # use futures::unsync::mpsc;
-    /// # use tokio_core::reactor::Core;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
     /// let (sender, receiver) = mpsc::unbounded();
     /// sender.unbounded_send(21);
     /// sender.unbounded_send(21);
     /// // Make sure the channel is terminated, or it would wait forever.
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
+    /// let result = Coroutine::new().run(move || {
     ///     let mut sum = 0;
     ///     for num in receiver.iter_result() {
     ///         sum += num.expect("MPSC should not error");
     ///     }
     ///     sum
     /// });
-    /// assert_eq!(42, core.run(coro).unwrap());
+    /// assert_eq!(42, result.unwrap());
     /// # }
     /// ```
     fn iter_result(self) -> ResultIterator<CleanupIterator<Self>> {
@@ -232,25 +209,22 @@ pub trait CoroutineStream: Sized {
     /// ```rust
     /// # extern crate corona;
     /// # extern crate futures;
-    /// # extern crate tokio_core;
     /// # use corona::prelude::*;
     /// # use futures::unsync::mpsc;
-    /// # use tokio_core::reactor::Core;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
     /// let (sender, mut receiver) = mpsc::unbounded();
     /// sender.unbounded_send(21);
     /// // The second item is unused
     /// sender.unbounded_send(21);
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
+    /// let result = Coroutine::new().run(move || {
     ///     receiver.extractor()
     ///         .coro_wait() // Block until the item actually falls out
     ///         .unwrap() // Unwrap the outer result
     ///         .unwrap() // Unwrap the option, since it gives `Option<T>`
     /// });
-    /// assert_eq!(21, core.run(coro).unwrap());
+    /// assert_eq!(21, result.unwrap());
     /// # }
     fn extractor(&mut self) -> StreamExtractor<Self>;
 
@@ -272,25 +246,22 @@ pub trait CoroutineStream: Sized {
     /// ```rust
     /// # extern crate corona;
     /// # extern crate futures;
-    /// # extern crate tokio_core;
     /// # use corona::prelude::*;
     /// # use futures::unsync::mpsc;
-    /// # use tokio_core::reactor::Core;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
     /// let (sender, mut receiver) = mpsc::unbounded();
     /// sender.unbounded_send(21);
     /// sender.unbounded_send(21);
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
+    /// let result = Coroutine::new().run(move || {
     ///     let mut sum = 0;
     ///     while let Some(num) = receiver.coro_next().unwrap() {
     ///         sum += num;
     ///     }
     ///     sum
     /// });
-    /// assert_eq!(42, core.run(coro).unwrap());
+    /// assert_eq!(42, result.unwrap());
     /// # }
     /// ```
     fn coro_next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
@@ -305,34 +276,24 @@ pub trait CoroutineStream: Sized {
     /// # Panics
     ///
     /// When called outside of a coroutine or when the stream itself panics.
-    fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped>;
+    fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped> {
+        self.extractor().coro_wait_cleanup()
+    }
 }
 
-impl<I, E, S: Stream<Item = I, Error = E>> CoroutineStream for S {
-    type Item = I;
-    type Error = E;
+impl<S: Stream> CoroutineStream for S {
     fn iter_cleanup(self) -> CleanupIterator<Self> {
         CleanupIterator::new(self)
     }
     fn extractor(&mut self) -> StreamExtractor<Self> {
         StreamExtractor::new(self)
     }
-    fn coro_next_cleanup(&mut self) -> Result<Result<Option<Self::Item>, Self::Error>, Dropped> {
-        self.extractor().coro_wait_cleanup()
-    }
 }
 
 /// An extension trait for `Sink`.
 ///
 /// This is automatically implemented for `Sink`s and adds some convenience methods to them.
-pub trait CoroutineSink: Sized {
-
-    /// The item pushed to a sink.
-    type Item;
-
-    /// The error the sink may return.
-    type Error;
-
+pub trait CoroutineSink: Sink + Sized {
     /// Sends one item into the sink.
     ///
     /// This is similar to `Sink::send`, but doesn't consume the sink, only borrows it mutably.
@@ -354,21 +315,22 @@ pub trait CoroutineSink: Sized {
     /// ```rust
     /// # extern crate corona;
     /// # extern crate futures;
-    /// # extern crate tokio_core;
     /// # use corona::prelude::*;
     /// # use futures::unsync::mpsc;
-    /// # use futures::Stream;
-    /// # use tokio_core::reactor::Core;
     /// # fn main() {
-    /// let mut core = Core::new().unwrap();
-    /// let (mut sender, receiver) = mpsc::channel(1);
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     sender.coro_send(42).unwrap();
+    /// let (mut sender, mut receiver) = mpsc::channel(1);
+    /// let result = Coroutine::new().run(move || {
+    ///     corona::spawn(move || {
+    ///         sender.coro_send(42).unwrap();
+    ///     });
+    ///     receiver.coro_next().unwrap()
     /// });
-    /// assert_eq!(42, core.run(receiver.into_future()).unwrap().0.unwrap());
+    /// assert_eq!(Some(42), result.unwrap());
     /// # }
     /// ```
-    fn coro_send(&mut self, item: Self::Item) -> Result<(), Self::Error>;
+    fn coro_send(&mut self, item: Self::SinkItem) -> Result<(), Self::SinkError> {
+        self.coro_sender(iter::once(item)).coro_wait()
+    }
 
     /// Sends one item into the sink without panicking on dropped reactor.
     ///
@@ -383,7 +345,11 @@ pub trait CoroutineSink: Sized {
     /// # Panics
     ///
     /// If it is called outside of a coroutine or if the sink itself panics.
-    fn coro_send_cleanup(&mut self, item: Self::Item) -> Result<Result<(), Self::Error>, Dropped>;
+    fn coro_send_cleanup(&mut self, item: Self::SinkItem)
+        -> Result<Result<(), Self::SinkError>, Dropped>
+    {
+        self.coro_sender(iter::once(item)).coro_wait_cleanup()
+    }
 
     /// Sends multiple items into the sink.
     ///
@@ -398,10 +364,12 @@ pub trait CoroutineSink: Sized {
     /// # Panics
     ///
     /// If it is called outside of a coroutine or if the sink panics internally.
-    fn coro_send_many<Iter, I>(&mut self, iter: I) -> Result<Result<(), Self::Error>, Dropped>
+    fn coro_send_many<I>(&mut self, iter: I) -> Result<Result<(), Self::SinkError>, Dropped>
     where
-        Iter: Iterator<Item = Self::Item>,
-        I: IntoIterator<Item = Self::Item, IntoIter = Iter>;
+        I: IntoIterator<Item = Self::SinkItem>
+    {
+        self.coro_sender(iter).coro_wait_cleanup()
+    }
 
     /// Creates a future that sends multiple items into the sink.
     ///
@@ -414,33 +382,16 @@ pub trait CoroutineSink: Sized {
     /// # Parameters
     ///
     /// * `iter`: The iterator over items to be sent.
-    fn coro_sender<Iter, I>(&mut self, iter: I) -> SinkSender<Self::Item, Self, Iter>
+    fn coro_sender<I>(&mut self, iter: I) -> SinkSender<Self::SinkItem, Self, I::IntoIter>
     where
-        Iter: Iterator<Item = Self::Item>,
-        I: IntoIterator<Item = Self::Item, IntoIter = Iter>;
+        I: IntoIterator<Item = Self::SinkItem>;
 }
 
-impl<I, E, S: Sink<SinkItem = I, SinkError = E>> CoroutineSink for S {
-    type Item = I;
-    type Error = E;
-    fn coro_sender<Iter, Src>(&mut self, iter: Src) -> SinkSender<Self::Item, Self, Iter>
+impl<S: Sink> CoroutineSink for S {
+    fn coro_sender<Src>(&mut self, iter: Src) -> SinkSender<Self::SinkItem, Self, Src::IntoIter>
     where
-        Iter: Iterator<Item = Self::Item>,
-        Src: IntoIterator<Item = Self::Item, IntoIter = Iter>
+        Src: IntoIterator<Item = Self::SinkItem>
     {
         SinkSender::new(self, iter)
-    }
-    fn coro_send(&mut self, item: Self::Item) -> Result<(), Self::Error> {
-        self.coro_sender(iter::once(item)).coro_wait()
-    }
-    fn coro_send_cleanup(&mut self, item: Self::Item) -> Result<Result<(), Self::Error>, Dropped> {
-        self.coro_sender(iter::once(item)).coro_wait_cleanup()
-    }
-    fn coro_send_many<Iter, Src>(&mut self, iter: Src) -> Result<Result<(), Self::Error>, Dropped>
-    where
-        Iter: Iterator<Item = Self::Item>,
-        Src: IntoIterator<Item = Self::Item, IntoIter = Iter>
-    {
-        self.coro_sender(iter).coro_wait_cleanup()
     }
 }
