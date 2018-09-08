@@ -1,12 +1,8 @@
-extern crate corona;
-extern crate futures;
-extern crate tokio_core;
-
 use futures::{future, stream};
 use futures::sync::mpsc;
 use tokio::runtime::current_thread::Runtime;
 
-use corona::Coroutine;
+use corona;
 use corona::prelude::*;
 
 /// A coroutine test fixture, for convenience and shared methods.

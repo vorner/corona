@@ -23,10 +23,10 @@ use super::prelude::*;
 ///
 /// ```
 /// # extern crate corona;
-/// # extern crate tokio_core;
+/// # extern crate tokio;
 /// use std::io::{Read, Result as IoResult};
 /// use corona::io::BlockingWrapper;
-/// use tokio_core::net::TcpStream;
+/// use tokio::net::TcpStream;
 ///
 /// fn blocking_read(connection: &mut TcpStream) -> IoResult<()> {
 ///     let mut connection = BlockingWrapper::new(connection);

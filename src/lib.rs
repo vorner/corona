@@ -128,7 +128,8 @@
 //! ## Coroutine-blocking IO
 //!
 //! Furthermore, if the `blocking-wrappers` feature is enabled (it is by default), all `AsyncRead`
-//! and `AsyncWrite` objects can be wrapped in [`corona::io::BlockingWrapper`]. This implements
+//! and `AsyncWrite` objects can be wrapped in
+//! [`corona::io::BlockingWrapper`](io/struct.BlockingWrapper.html). This implements
 //! `Read` and `Write` in a way that mimics blocking, but it blocks only the coroutine, not the
 //! whole thread. This allows it to be used with usual blocking routines, like
 //! `serde_json::from_reader`.

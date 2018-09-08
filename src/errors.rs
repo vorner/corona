@@ -43,8 +43,8 @@ pub enum TaskFailed {
     PanicPropagated,
     /// The coroutine was lost.
     ///
-    /// This can happen in case the `tokio_core::reactor::Core` the coroutine was spawned onto was
-    /// dropped before the coroutine completed.
+    /// This can happen in case the executor the coroutine was spawned onto was dropped before the
+    /// coroutine completed.
     ///
     /// Technically, the coroutine panicked, but this special panic is handled differently.
     Lost,

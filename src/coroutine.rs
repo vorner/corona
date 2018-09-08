@@ -420,7 +420,7 @@ impl Coroutine {
         // Reconstruct our context anew after we switched back.
         let new_context = CoroutineContext {
             parent_context: context,
-            stack: stack,
+            stack,
             cleanup_strategy: my_context.cleanup_strategy,
         };
         CONTEXTS.with(|c| c.borrow_mut().push(new_context));
