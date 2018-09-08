@@ -4,7 +4,7 @@ extern crate tokio_core;
 
 use futures::{future, stream};
 use futures::sync::mpsc;
-use tokio::runtime::current_thread::{self, Runtime};
+use tokio::runtime::current_thread::Runtime;
 
 use corona::Coroutine;
 use corona::prelude::*;
@@ -80,16 +80,15 @@ fn reference() {
 /// Pushing things into a sink, which must switch between the coroutines.
 #[test]
 fn push_sink() {
-    let sum = current_thread::block_on_all(future::lazy(|| {
+    let sum = Coroutine::new().run(|| {
         let (mut sender, receiver) = mpsc::channel(1);
-        Coroutine::with_defaults(move || {
+        corona::spawn(move || {
             sender.coro_send(2).unwrap();
             sender.coro_send_many(vec![20, 20]).unwrap().unwrap();
         });
-        Coroutine::with_defaults(move || {
-            receiver.iter_ok().sum()
-        })
-    })).unwrap();
+
+        receiver.iter_ok().sum()
+    }).unwrap();
     assert_eq!(42, sum);
 }
 

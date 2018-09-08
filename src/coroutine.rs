@@ -134,10 +134,9 @@ impl Coroutine {
     /// use tokio::runtime::current_thread;
     ///
     /// # fn main() {
-    /// current_thread::block_on_all(future::lazy(|| {
-    ///     let builder = Coroutine::new();
-    ///     builder.spawn(|| { }).unwrap()
-    /// })).unwrap();
+    /// Coroutine::new()
+    ///     .run(|| {})
+    ///     .unwrap();
     /// # }
     ///
     /// ```
@@ -284,11 +283,10 @@ impl Coroutine {
     /// use tokio::runtime::current_thread;
     ///
     /// # fn main() {
-    /// current_thread::block_on_all(future::lazy(|| {
-    ///     Coroutine::new()
-    ///         .stack_size(40_960)
-    ///         .spawn(|| { }).unwrap()
-    /// })).unwrap();
+    /// Coroutine::new()
+    ///     .stack_size(40_960)
+    ///     .run(|| { })
+    ///     .unwrap();
     /// # }
     /// ```
     ///
@@ -459,6 +457,14 @@ impl Coroutine {
         Ok(())
     }
 
+    /// Gets a copy of the builder in thread-local storage.
+    ///
+    /// This may help if you want to use the same builder as [`spawn`](fn.spawn.html) does, but you
+    /// want to do something more fancy, like [`spawn_catch_panic`](#method.spawn_catch_panic).
+    pub fn from_thread_local() -> Self {
+        BUILDER.with(|builder| builder.borrow().clone())
+    }
+
     /// Starts a whole runtime and waits for a main coroutine.
     ///
     /// While it is possible to create the `tokio::runtime::current_thread::Runtime` manually, feed
@@ -583,7 +589,7 @@ mod tests {
     /// Wait for a future to complete.
     #[test]
     fn future_wait() {
-        let result = current_thread::block_on_all(future::lazy(|| {
+        let result = Coroutine::new().run(|| {
             let (sender, receiver) = oneshot::channel();
             let all_done = Coroutine::with_defaults(move || {
                 let msg = Coroutine::wait(receiver).unwrap().unwrap();
@@ -594,8 +600,8 @@ mod tests {
                 Coroutine::wait(timeout).unwrap().unwrap();
                 sender.send(42).unwrap();
             });
-            all_done
-        }));
+            Coroutine::wait(all_done).unwrap().unwrap()
+        });
         assert_eq!(42, result.unwrap());
     }
 
@@ -617,9 +623,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn panics_spawn() {
-        let _ = current_thread::block_on_all(future::lazy(|| {
-            Coroutine::new().spawn(|| panic!("Test"))
-        }));
+        let _ = Coroutine::new().run(|| {
+            spawn(|| panic!("Test"))
+        });
     }
 
     /// This one panics and the panic is propagated, but after suspension point it is out of run.
