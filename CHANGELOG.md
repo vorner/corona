@@ -1,3 +1,7 @@
+# 0.4.0
+
+* Ported to use tokio instead of tokio-core.
+
 # 0.4.0-pre.1
 
 * Added configuration for the cleanup strategy (eg. when the core is dropped and
