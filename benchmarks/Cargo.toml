@@ -3,6 +3,7 @@ name = "benchmarks"
 version = "0.1.0"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 workspace = ".."
+publish = false
 
 [dependencies]
 
