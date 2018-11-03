@@ -1,4 +1,4 @@
-#![feature(generators, proc_macro_non_items, test)]
+#![feature(generators, proc_macro_hygiene, test)]
 
 //! Minimal benchmarks and comparison of some IO manipulation.
 //!
