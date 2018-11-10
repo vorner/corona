@@ -21,8 +21,7 @@ You want to read the [docs](https://docs.rs/corona) and examine the
 # Status
 
 I hope to stabilize the API soon. But I want to write some more examples and
-experiments first. Also, an update to reflect on the changes in Tokio world
-needs to happen.
+experiments first.
 
 If you use it for something, I want to hear about it.
 
