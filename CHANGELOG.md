@@ -1,3 +1,8 @@
+# 0.4.1
+
+* Export the coroutine module (made some intended-public things private by
+  accident before).
+
 # 0.4.0
 
 * Ported to use tokio instead of tokio-core.

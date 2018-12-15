@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/corona/0.4.0/corona/")]
+#![doc(html_root_url = "https://docs.rs/corona/0.4.1/corona/")]
 #![warn(missing_docs)]
 
 //! A library combining futures and coroutines.
@@ -275,11 +275,11 @@ extern crate tokio_io;
 
 #[cfg(feature = "blocking-wrappers")]
 pub mod io;
+pub mod coroutine;
 pub mod errors;
 pub mod prelude;
 pub mod wrappers;
 
-mod coroutine;
 mod stack_cache;
 mod switch;
 
