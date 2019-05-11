@@ -12,7 +12,7 @@ dependencies = [
 name = "benchmarks"
 version = "0.1.0"
 dependencies = [
- "corona 0.4.1",
+ "corona 0.4.2",
  "futures-await 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-cpupool 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "corona"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes 0.4.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "context 2.1.0 (registry+https://github.com/rust-lang/crates.io-index)",

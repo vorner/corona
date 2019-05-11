@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/corona/0.4.1/corona/")]
+#![doc(html_root_url = "https://docs.rs/corona/0.4.2/corona/")]
 #![warn(missing_docs)]
 
 //! A library combining futures and coroutines.

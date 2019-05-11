@@ -1,3 +1,9 @@
+# 0.4.2
+
+* Allow the stack size to be arbitrary and let the libraries deal with it by
+  rounding up to page sizes.
+* Few doc link fixes.
+
 # 0.4.1
 
 * Export the coroutine module (made some intended-public things private by
