@@ -4,6 +4,7 @@ extern crate tokio;
 #[macro_use]
 extern crate version_sync;
 
+mod bugreports;
 mod early_cleanup;
 #[cfg(feature = "blocking-wrappers")]
 mod io_blocking;

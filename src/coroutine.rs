@@ -152,10 +152,11 @@ impl Coroutine {
     /// Coroutines spawned from this builder will get stack of this size. The default is something
     /// small, so if you use recursion, you might want to use this.
     ///
-    /// Note that the size must be a valid stack size. This is platform dependent, but usually
-    /// must be multiple of a page size. That usually means a multiple of 4096.
+    /// The stack size might be rounded up to a valid platform-dependent stack size (usually the
+    /// nearest multiple of 4096).
     ///
-    /// If an invalid size is set, attempts to spawn coroutines will fail with an error.
+    /// It is possible the stack size would still be invalid after this rounding up on given
+    /// platform (eg. too large). In such case, attempts to spawn coroutines will fail with error.
     ///
     /// # Parameters
     ///
