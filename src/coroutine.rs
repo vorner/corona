@@ -1,4 +1,4 @@
-//! The [`Coroutine`](struct.Coroutine.html) and related things.
+//! The [`Coroutine`][::coroutine::Coroutine] and related things.
 
 use std::any::Any;
 use std::cell::RefCell;

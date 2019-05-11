@@ -48,7 +48,7 @@
 //! current-thread executor, which is easiest by wrapping the whole application into
 //! `tokio::runtime::current_thread::block_on_all` and `future::lazy`.
 //!
-//! There's also the [`Coroutine::run`](coroutine.struct.Coroutine.html#method.run) that does the
+//! There's also the [`Coroutine::run`](coroutine/struct.Coroutine.html#method.run) that does the
 //! same (but is available only in case the `convenient-run` feature is not turned off).
 //!
 //! Each new coroutine returns a future. It resolves whenever the coroutine terminates. However,
