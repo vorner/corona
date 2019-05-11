@@ -249,7 +249,7 @@ impl Switch {
     /// Creates a new coroutine and runs it.
     pub(crate) fn run_new_coroutine(stack_size: usize, task: BoxedTask) -> Result<(), StackError> {
         let stack = stack_cache::get(stack_size)?;
-        assert_eq!(stack.len(), stack_size);
+        assert!(stack.len() >= stack_size);
         // The `Context::new` is unsafe only because we have to promise not to delete the stack
         // prematurely, while the coroutine is still alive. We ensure that by giving the ownership
         // of the stack to the coroutine and it gives it up only once it is ready to terminate.
