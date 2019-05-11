@@ -403,7 +403,7 @@ impl Coroutine {
                 unsafe { *result = Some(res) };
                 Ok(Async::Ready(()))
             };
-            let mut task = WaitTask {
+            let task = WaitTask {
                 poll: &mut poll,
                 context: None,
                 cleanup_strategy: my_context.cleanup_strategy,
