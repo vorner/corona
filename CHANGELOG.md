@@ -1,3 +1,7 @@
+# 0.4.3
+
+* Deprecating.
+
 # 0.4.2
 
 * Allow the stack size to be arbitrary and let the libraries deal with it by

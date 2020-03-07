@@ -1,10 +1,15 @@
-#![doc(html_root_url = "https://docs.rs/corona/0.4.2/corona/")]
+#![doc(html_root_url = "https://docs.rs/corona/0.4.3/corona/")]
 #![warn(missing_docs)]
 
 //! A library combining futures and coroutines.
 //!
 //! This library brings stack-full coroutines. Each coroutine can asynchronously wait on futures
 //! and provides a future of its result.
+//!
+//! # Deprecation notice
+//!
+//! This supports the old version of tokio (0.1). There's not much need for it any more, since Rust
+//! now supports async/await directly, so use some of the async libraries.
 //!
 //! # Motivation
 //!

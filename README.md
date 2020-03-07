@@ -1,5 +1,13 @@
 # Corona
 
+## Deprecated
+
+This library supports tokio 0.1, which is outdated. There's not much need for it
+any more since Rust supports native async/await syntax. Use some of the async
+libraries directly.
+
+## About the library
+
 [![Travis Build Status](https://api.travis-ci.org/vorner/corona.svg?branch=master)](https://travis-ci.org/vorner/corona)
 [![AppVeyor Build status](https://ci.appveyor.com/api/projects/status/ygytb97bion810ru/branch/master?svg=true)](https://ci.appveyor.com/project/vorner/corona/branch/master)
 
@@ -17,13 +25,6 @@ its own stack, which takes memory.
 
 You want to read the [docs](https://docs.rs/corona) and examine the
 [examples](https://github.com/vorner/corona/tree/master/examples).
-
-# Status
-
-I hope to stabilize the API soon. But I want to write some more examples and
-experiments first.
-
-If you use it for something, I want to hear about it.
 
 ## License
 
